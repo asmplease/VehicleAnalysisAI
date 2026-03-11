@@ -550,6 +550,218 @@ class AnalyticsService:
             )
             return normalize_rows(cur.fetchall())
 
+    def get_device_deceleration_spots(self, device_id: str, limit: int = 60) -> list[dict[str, Any]]:
+        """
+        Find candidate speed-bump / speed-breaker locations for a device.
+        A 'deceleration event' is defined as: approach speed > 20 km/h AND speed drops > 15 km/h
+        within a plausible 1-120 second window between consecutive clean GPS points.
+        Events close to the same coordinate (4 dp ~ 11m) are clustered and counted.
+        """
+        safe_limit = max(1, min(limit, 200))
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                with ordered_pts as (
+                    select
+                        gps_time,
+                        latitude,
+                        longitude,
+                        device_speed,
+                        lag(device_speed) over (order by gps_time) as prev_speed,
+                        lag(gps_time)     over (order by gps_time) as prev_time
+                    from public.device_latest_position
+                    where device_id = %s
+                      and gps_time between timestamp '2025-01-01'
+                                      and now() + interval '1 day'
+                      and device_speed between 0 and 180
+                      and latitude  between -90  and 90
+                      and longitude between -180 and 180
+                ),
+                decel_events as (
+                    select
+                        latitude,
+                        longitude,
+                        gps_time,
+                        device_speed    as exit_speed,
+                        prev_speed      as approach_speed,
+                        (prev_speed - device_speed) as speed_drop,
+                        extract(epoch from (gps_time - prev_time)) as gap_sec
+                    from ordered_pts
+                    where prev_speed is not null
+                      and prev_speed > 20
+                      and (prev_speed - device_speed) > 15
+                      and extract(epoch from (gps_time - prev_time)) between 1 and 120
+                ),
+                clustered as (
+                    select
+                        round(latitude::numeric,  4) as lat,
+                        round(longitude::numeric, 4) as lon,
+                        count(*)                        as event_count,
+                        avg(speed_drop)                 as avg_speed_drop,
+                        max(speed_drop)                 as max_speed_drop,
+                        avg(approach_speed)             as avg_approach_speed,
+                        min(exit_speed)                 as min_exit_speed,
+                        min(gps_time)                   as first_event,
+                        max(gps_time)                   as last_event
+                    from decel_events
+                    group by round(latitude::numeric,4), round(longitude::numeric,4)
+                )
+                select
+                    lat            as latitude,
+                    lon            as longitude,
+                    event_count,
+                    round(avg_speed_drop::numeric, 1)      as avg_speed_drop_kmh,
+                    round(max_speed_drop::numeric, 1)      as max_speed_drop_kmh,
+                    round(avg_approach_speed::numeric, 1)  as avg_approach_speed_kmh,
+                    round(min_exit_speed::numeric, 1)      as min_exit_speed_kmh,
+                    first_event,
+                    last_event,
+                    case
+                        when event_count >= 5 and avg_speed_drop > 35 then 'Likely speed breaker'
+                        when event_count >= 3 and avg_speed_drop > 25 then 'Probable speed reduction'
+                        when event_count >= 2 then 'Repeated deceleration'
+                        else 'Single deceleration event'
+                    end as classification
+                from clustered
+                order by event_count desc, avg_speed_drop desc
+                limit %s
+                """,
+                (device_id, safe_limit),
+            )
+            return normalize_rows(cur.fetchall())
+
+    def get_fleet_hotspots_near_device(
+        self, device_id: str, days: int = 30, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """
+        Fleet-wide GPS density hotspots around the geographic area this device has been seen.
+        Uses gps_points_analytics (pre-aggregated table) to avoid scanning 117M raw rows.
+        """
+        safe_days = max(7, min(days, 90))
+        safe_limit = max(10, min(limit, 500))
+        with get_cursor() as cur:
+            # 1. Get bounding box from this device's valid positions
+            cur.execute(
+                """
+                select
+                    min(latitude)  - 0.08 as min_lat,
+                    max(latitude)  + 0.08 as max_lat,
+                    min(longitude) - 0.08 as min_lon,
+                    max(longitude) + 0.08 as max_lon
+                from public.device_latest_position
+                where device_id = %s
+                  and latitude  between -90  and 90
+                  and longitude between -180 and 180
+                """,
+                (device_id,),
+            )
+            bbox = cur.fetchone()
+            if not bbox or bbox['min_lat'] is None:
+                return []
+            min_lat = bbox['min_lat']
+            max_lat = bbox['max_lat']
+            min_lon = bbox['min_lon']
+            max_lon = bbox['max_lon']
+
+            # 2. Query analytics table within bounding box, last N days
+            # Set a short statement timeout so a slow table scan doesn't hang the API
+            cur.execute("SET LOCAL statement_timeout = '20s'")
+            try:
+                cur.execute(
+                    """
+                    select
+                        round(latitude_4dp::numeric,  4)       as latitude,
+                        round(longitude_4dp::numeric, 4)       as longitude,
+                        count(distinct device_id)              as unique_devices,
+                        sum(points_count)                      as total_points,
+                        count(distinct analytics_date)         as active_days,
+                        max(analytics_date)                    as latest_date
+                    from public.gps_points_analytics
+                    where analytics_date >= current_date - %s
+                      and latitude_4dp  between %s and %s
+                      and longitude_4dp between %s and %s
+                    group by latitude_4dp, longitude_4dp
+                    having sum(points_count) > 5
+                    order by unique_devices desc, total_points desc
+                    limit %s
+                    """,
+                    (safe_days, min_lat, max_lat, min_lon, max_lon, safe_limit),
+                )
+                return normalize_rows(cur.fetchall())
+            except Exception:
+                return []
+
+    def get_device_speed_profile(self, device_id: str, limit: int = 300) -> list[dict[str, Any]]:
+        """
+        Ordered speed-over-time series for a device, including deltas for acceleration/deceleration
+        visualisation and orientation data. Filters out invalid timestamps and speeds.
+        """
+        safe_limit = max(50, min(limit, 600))
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                with clean_pts as (
+                    select
+                        gps_time,
+                        latitude,
+                        longitude,
+                        device_speed,
+                        orientation,
+                        date
+                    from public.device_latest_position
+                    where device_id = %s
+                      and gps_time between timestamp '2025-01-01'
+                                      and now() + interval '1 day'
+                      and device_speed between 0 and 180
+                      and latitude  between -90 and 90
+                      and longitude between -180 and 180
+                    order by gps_time desc
+                    limit %s
+                ),
+                with_delta as (
+                    select
+                        gps_time,
+                        latitude,
+                        longitude,
+                        device_speed,
+                        orientation,
+                        date,
+                        lag(device_speed) over (order by gps_time) as prev_speed,
+                        lag(gps_time)     over (order by gps_time) as prev_gps_time,
+                        (device_speed
+                         - lag(device_speed) over (order by gps_time))  as speed_delta,
+                        extract(epoch from
+                            gps_time - lag(gps_time) over (order by gps_time))  as elapsed_sec
+                    from clean_pts
+                )
+                select
+                    gps_time,
+                    latitude,
+                    longitude,
+                    device_speed,
+                    orientation,
+                    date,
+                    round(speed_delta::numeric, 2)                                  as speed_delta,
+                    round(elapsed_sec::numeric, 1)                                  as elapsed_sec,
+                    round(
+                        case when elapsed_sec > 0 then speed_delta / elapsed_sec
+                             else null end ::numeric
+                    , 3)                                                             as accel_ms2,
+                    case
+                        when speed_delta is null                    then 'start'
+                        when speed_delta >  15                      then 'hard_accel'
+                        when speed_delta >  5                       then 'accel'
+                        when speed_delta < -15                      then 'hard_brake'
+                        when speed_delta < -5                       then 'brake'
+                        else                                             'cruise'
+                    end                                                              as event_label
+                from with_delta
+                order by gps_time asc
+                """,
+                (device_id, safe_limit),
+            )
+            return normalize_rows(cur.fetchall())
+
     def get_trip_candidates(self, device_id: str, limit: int = 100) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, 500))
         with get_cursor() as cur:
@@ -612,9 +824,58 @@ class AnalyticsService:
             )
             return normalize_rows(cur.fetchall())
 
+    def get_trip_candidates(self, device_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        safe_limit = max(1, min(limit, 500))
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                with ordered as (
+                    select
+                        device_id, gps_time, date, latitude, longitude, device_speed,
+                        lag(gps_time) over (partition by device_id order by gps_time) as prev_gps_time,
+                        lag(latitude) over (partition by device_id order by gps_time) as prev_latitude,
+                        lag(longitude) over (partition by device_id order by gps_time) as prev_longitude
+                    from public.device_latest_position
+                    where device_id = %s
+                      and gps_time between timestamp '2025-01-01' and now() + interval '1 day'
+                      and device_speed between 0 and 180
+                ),
+                segmented as (
+                    select device_id, date, gps_time, latitude, longitude, device_speed,
+                        case
+                            when prev_gps_time is null then 1
+                            when gps_time - prev_gps_time > interval '30 minutes' then 1
+                            else 0
+                        end as new_trip_flag
+                    from ordered
+                ),
+                tagged as (
+                    select *,
+                        sum(new_trip_flag) over (partition by device_id order by gps_time rows unbounded preceding) as trip_id
+                    from segmented
+                )
+                select
+                    trip_id,
+                    min(gps_time)   as trip_start,
+                    max(gps_time)   as trip_end,
+                    count(*)        as point_count,
+                    round(avg(device_speed)::numeric, 2) as avg_speed,
+                    max(device_speed) as max_speed,
+                    min(latitude) as min_latitude, max(latitude) as max_latitude,
+                    min(longitude) as min_longitude, max(longitude) as max_longitude
+                from tagged
+                group by trip_id
+                order by trip_start desc
+                limit %s
+                """,
+                (device_id, safe_limit),
+            )
+            return normalize_rows(cur.fetchall())
+
     def get_health(self) -> dict[str, Any]:
         with get_cursor() as cur:
             cur.execute(
                 "select current_database() as database_name, current_user as username, now() as checked_at"
             )
             return normalize_rows(cur.fetchall())[0]
+

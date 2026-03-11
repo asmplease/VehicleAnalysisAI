@@ -181,8 +181,20 @@
                                 <div class="panel-header">
                                     <div>
                                         <h3>OpenStreetMap route view</h3>
-                                        <p class="muted">GPS points are colored by inferred behaviour from speed bands.</p>
+                                        <p class="muted">Route, speed-breaker candidates, and fleet hotspot density layers.</p>
                                     </div>
+                                </div>
+                                <!-- Layer toggles -->
+                                <div class="map-layer-toggles" id="mapLayerToggles">
+                                    <label class="layer-toggle active" data-layer="route">
+                                        <input type="checkbox" checked> Route &amp; speed bands
+                                    </label>
+                                    <label class="layer-toggle" data-layer="decel" id="decelToggleLabel">
+                                        <input type="checkbox" id="decelLayerToggle"> Speed breakers <span id="decelCount" class="badge-sm"></span>
+                                    </label>
+                                    <label class="layer-toggle" data-layer="hotspots" id="hotspotToggleLabel">
+                                        <input type="checkbox" id="hotspotLayerToggle"> Fleet hotspots <span id="hotspotCount" class="badge-sm"></span>
+                                    </label>
                                 </div>
                                 <div id="deviceMap" class="device-map"></div>
                                 <div class="map-legend">
@@ -191,12 +203,35 @@
                                     <span><i class="legend-dot cruise"></i>Cruising</span>
                                     <span><i class="legend-dot brisk"></i>Brisk</span>
                                     <span><i class="legend-dot aggressive"></i>Aggressive</span>
+                                    <span><i class="legend-dot decel-dot"></i>Speed breaker</span>
+                                    <span><i class="legend-dot hotspot-dot"></i>Fleet hotspot</span>
                                 </div>
                             </div>
                             <div class="mini-panel" data-panel="device-recent-positions">
                                 <h3>Recent telemetry points</h3>
                                 <div id="recentPositions" class="table-wrapper"></div>
                             </div>
+                        </div>
+
+                        <!-- Speed Profile + Deceleration Spots -->
+                        <div class="mini-panel" data-panel="speed-profile">
+                            <div class="panel-header compact-header">
+                                <div>
+                                    <h3>Speed profile over time</h3>
+                                    <p class="muted">Speed (km/h) per GPS point — coloured by event type (hard brake, accel, cruise).</p>
+                                </div>
+                            </div>
+                            <canvas id="speedProfileChart"></canvas>
+                        </div>
+
+                        <div class="mini-panel" data-panel="decel-spots">
+                            <div class="panel-header compact-header">
+                                <div>
+                                    <h3>Speed breaker / deceleration hotspots</h3>
+                                    <p class="muted">Candidate speed-bump locations detected from consecutive GPS speed drops. Click a row to fly the map to that point.</p>
+                                </div>
+                            </div>
+                            <div id="decelSpotsTable" class="table-wrapper"></div>
                         </div>
 
                         <!-- ── Deep Analysis ──────────────────────────────────────────── -->
@@ -271,6 +306,9 @@
                     <li><span>GET</span> /api/devices/{device_id}/positions?limit=100</li>
                     <li><span>GET</span> /api/devices/{device_id}/trip-candidates?limit=50</li>
                     <li><span>GET</span> /api/devices/{device_id}/full-analysis?days=30</li>
+                    <li><span>GET</span> /api/devices/{device_id}/speed-profile?limit=300</li>
+                    <li><span>GET</span> /api/devices/{device_id}/deceleration-spots?limit=60</li>
+                    <li><span>GET</span> /api/devices/{device_id}/fleet-hotspots?days=30&amp;limit=200</li>
                 </ul>
             </section>
         </main>

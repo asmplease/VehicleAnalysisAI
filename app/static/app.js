@@ -21,8 +21,12 @@ const state = {
     dataPointsChart: null,
     deviceScoreChart: null,
     deviceMap: null,
-    deviceMapLayers: null,
+    // Separate layer groups for each map layer
+    routeLayer: null,
+    decelLayer: null,
+    hotspotLayer: null,
     selectedDevice: null,
+    speedProfileChart: null,
     // Deep analysis charts
     alertMixChart: null,
     alertSeverityChart: null,
@@ -48,6 +52,8 @@ const panelMessages = {
     'device-trip-candidates': 'Loading trip candidates…',
     'device-map': 'Loading map and GPS markers…',
     'device-recent-positions': 'Loading telemetry points…',
+    'speed-profile': 'Building speed profile…',
+    'decel-spots': 'Detecting speed breaker candidates…',
     // Deep analysis
     'alert-mix': 'Loading alert distribution…',
     'fleet-comparison': 'Loading fleet comparison…',
@@ -572,75 +578,279 @@ function ensureDeviceMap() {
         attribution: '&copy; OpenStreetMap contributors',
     }).addTo(state.deviceMap);
 
-    state.deviceMapLayers = L.layerGroup().addTo(state.deviceMap);
+    // Three independent layer groups for toggle control
+    state.routeLayer   = L.layerGroup().addTo(state.deviceMap);
+    state.decelLayer   = L.layerGroup(); // not added until toggled on
+    state.hotspotLayer = L.layerGroup(); // not added until toggled on
+
     state.deviceMap.setView([20.5937, 78.9629], 5);
+}
+
+function flyMapTo(lat, lon, zoom) {
+    ensureDeviceMap();
+    if (!state.deviceMap) return;
+    state.deviceMap.flyTo([lat, lon], zoom || 17, { duration: 0.8 });
 }
 
 function renderDeviceMap(rows, deviceId) {
     ensureDeviceMap();
-    if (!state.deviceMap || !state.deviceMapLayers) {
-        return;
-    }
+    if (!state.deviceMap || !state.routeLayer) return;
 
-    state.deviceMapLayers.clearLayers();
+    state.routeLayer.clearLayers();
 
     const validRows = rows
-        .filter(row => row.latitude !== null && row.longitude !== null)
-        .map(row => ({
-            ...row,
-            latitude: Number(row.latitude),
-            longitude: Number(row.longitude),
-            device_speed: Number(row.device_speed || 0),
+        .filter(r => r.latitude !== null && r.longitude !== null)
+        .map(r => ({
+            ...r,
+            latitude: Number(r.latitude),
+            longitude: Number(r.longitude),
+            device_speed: Number(r.device_speed || 0),
         }))
-        .filter(row => Number.isFinite(row.latitude) && Number.isFinite(row.longitude));
+        .filter(r => Number.isFinite(r.latitude) && Number.isFinite(r.longitude));
 
     if (!validRows.length) {
         state.deviceMap.setView([20.5937, 78.9629], 5);
-        document.getElementById('deviceMap').setAttribute('data-empty', 'true');
         return;
     }
 
-    document.getElementById('deviceMap').removeAttribute('data-empty');
     const ordered = [...validRows].reverse();
-    const latLngs = ordered.map(row => [row.latitude, row.longitude]);
+    const latLngs = ordered.map(r => [r.latitude, r.longitude]);
 
-    L.polyline(latLngs, {
-        color: '#3662ff',
-        weight: 3,
-        opacity: 0.55,
-    }).addTo(state.deviceMapLayers);
+    L.polyline(latLngs, { color: '#3662ff', weight: 3, opacity: 0.50 })
+        .addTo(state.routeLayer);
 
     ordered.forEach((row, index) => {
         const behaviour = getBehaviourStyle(row.device_speed);
         const isLatest = index === ordered.length - 1;
         const marker = L.circleMarker([row.latitude, row.longitude], {
-            radius: isLatest ? behaviour.radius + 2 : behaviour.radius,
+            radius: isLatest ? behaviour.radius + 3 : behaviour.radius,
             color: '#ffffff',
-            weight: isLatest ? 2.5 : 1.5,
+            weight: isLatest ? 2.5 : 1.2,
             fillColor: behaviour.color,
-            fillOpacity: 0.9,
+            fillOpacity: 0.88,
         });
 
         marker.bindPopup(`
             <div class="map-popup">
                 <strong>${deviceId}</strong><br>
-                Behaviour: ${behaviour.label}<br>
+                Behaviour: <b>${behaviour.label}</b><br>
                 GPS time: ${formatValue(row.gps_time)}<br>
-                Speed: ${formatDecimal(row.device_speed, 1)}<br>
+                Speed: <b>${formatDecimal(row.device_speed, 1)} km/h</b><br>
                 Lat/Lon: ${formatDecimal(row.latitude, 6)}, ${formatDecimal(row.longitude, 6)}<br>
                 Vehicle: ${formatValue(row.vehicle_type)}
             </div>
         `);
 
-        marker.addTo(state.deviceMapLayers);
-        if (isLatest) {
-            marker.openPopup();
-        }
+        marker.addTo(state.routeLayer);
+        if (isLatest) marker.openPopup();
     });
 
     const bounds = L.latLngBounds(latLngs);
     state.deviceMap.fitBounds(bounds.pad(0.15));
     setTimeout(() => state.deviceMap.invalidateSize(), 50);
+}
+
+// ── Speed breaker / deceleration spots layer ─────────────────────────────────
+
+function renderDecelerationSpots(rows) {
+    if (!state.decelLayer) return;
+    state.decelLayer.clearLayers();
+
+    // Update badge count
+    const badge = document.getElementById('decelCount');
+    if (badge) badge.textContent = rows.length ? `${rows.length}` : '0';
+
+    rows.forEach(row => {
+        const lat = Number(row.latitude);
+        const lon = Number(row.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+        // Size the marker by event count, capped
+        const radius = Math.min(8 + row.event_count * 2, 22);
+        const isStrong = row.event_count >= 5 && row.avg_speed_drop_kmh > 35;
+
+        const marker = L.circleMarker([lat, lon], {
+            radius,
+            color: isStrong ? '#7c2d12' : '#c2410c',
+            weight: 2,
+            fillColor: '#f97316',
+            fillOpacity: 0.72,
+        });
+
+        marker.bindPopup(`
+            <div class="map-popup">
+                <strong>⚠ ${row.classification}</strong><br>
+                Events detected: <b>${row.event_count}</b><br>
+                Avg speed drop: <b>${formatDecimal(row.avg_speed_drop_kmh, 1)} km/h</b><br>
+                Max speed drop: ${formatDecimal(row.max_speed_drop_kmh, 1)} km/h<br>
+                Avg approach: ${formatDecimal(row.avg_approach_speed_kmh, 1)} km/h<br>
+                Exit speed: ${formatDecimal(row.min_exit_speed_kmh, 1)} km/h<br>
+                First seen: ${formatValue(row.first_event)}<br>
+                Last seen: ${formatValue(row.last_event)}<br>
+                Lat/Lon: ${formatDecimal(lat, 5)}, ${formatDecimal(lon, 5)}
+            </div>
+        `);
+
+        marker.addTo(state.decelLayer);
+    });
+
+    // Render the table
+    renderTable(
+        'decelSpotsTable',
+        [
+            { key: 'latitude',             label: 'Latitude',     render: v => formatDecimal(v, 5) },
+            { key: 'longitude',            label: 'Longitude',    render: v => formatDecimal(v, 5) },
+            { key: 'event_count',          label: 'Events',       render: v => formatNumber(v) },
+            { key: 'avg_speed_drop_kmh',   label: 'Avg drop km/h', render: v => formatDecimal(v, 1) },
+            { key: 'max_speed_drop_kmh',   label: 'Max drop km/h', render: v => formatDecimal(v, 1) },
+            { key: 'avg_approach_speed_kmh', label: 'Approach km/h', render: v => formatDecimal(v, 1) },
+            { key: 'classification',       label: 'Classification' },
+            { key: 'last_event',           label: 'Last seen' },
+        ],
+        rows,
+        'No deceleration hotspots detected for this device.'
+    );
+
+    // Make table rows fly the map to that spot
+    const tbody = document.querySelector('#decelSpotsTable table tbody');
+    if (tbody) {
+        tbody.querySelectorAll('tr').forEach((tr, i) => {
+            if (!rows[i]) return;
+            tr.style.cursor = 'pointer';
+            tr.title = 'Click to fly map to this location';
+            tr.addEventListener('click', () => {
+                const r = rows[i];
+                // Ensure decel layer is visible
+                const chk = document.getElementById('decelLayerToggle');
+                if (chk && !chk.checked) { chk.checked = true; chk.dispatchEvent(new Event('change')); }
+                flyMapTo(Number(r.latitude), Number(r.longitude), 17);
+                // Open popup
+                setTimeout(() => {
+                    state.decelLayer.eachLayer(lyr => {
+                        const ll = lyr.getLatLng && lyr.getLatLng();
+                        if (ll && Math.abs(ll.lat - r.latitude) < 0.0001 &&
+                            Math.abs(ll.lng - r.longitude) < 0.0001) {
+                            lyr.openPopup();
+                        }
+                    });
+                }, 900);
+            });
+        });
+    }
+}
+
+// ── Fleet hotspots layer ──────────────────────────────────────────────────────
+
+function renderFleetHotspots(rows) {
+    if (!state.hotspotLayer) return;
+    state.hotspotLayer.clearLayers();
+
+    const badge = document.getElementById('hotspotCount');
+    if (badge) badge.textContent = rows.length ? `${rows.length}` : '0';
+
+    if (!rows.length) return;
+
+    // Normalise for radius scaling
+    const maxDevices = Math.max(...rows.map(r => r.unique_devices || 1), 1);
+
+    rows.forEach(row => {
+        const lat = Number(row.latitude);
+        const lon = Number(row.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+        const norm = (row.unique_devices || 1) / maxDevices;
+        const radius = Math.max(5, Math.round(6 + norm * 20));
+        const opacity = 0.2 + norm * 0.45;
+
+        L.circleMarker([lat, lon], {
+            radius,
+            color: '#6d28d9',
+            weight: 1.2,
+            fillColor: '#8b5cf6',
+            fillOpacity: opacity,
+        }).bindPopup(`
+            <div class="map-popup">
+                <strong>Fleet hotspot</strong><br>
+                Unique devices: <b>${formatNumber(row.unique_devices)}</b><br>
+                Total GPS points: <b>${formatNumber(row.total_points)}</b><br>
+                Active days: ${formatValue(row.active_days)}<br>
+                Latest date: ${formatValue(row.latest_date)}<br>
+                Lat/Lon: ${formatDecimal(lat, 4)}, ${formatDecimal(lon, 4)}
+            </div>
+        `).addTo(state.hotspotLayer);
+    });
+}
+
+// ── Speed profile chart ───────────────────────────────────────────────────────
+
+function renderSpeedProfileChart(rows) {
+    if (state.speedProfileChart) { state.speedProfileChart.destroy(); state.speedProfileChart = null; }
+    const ctx = document.getElementById('speedProfileChart');
+    if (!ctx || !rows || !rows.length) return;
+
+    const eventColor = {
+        hard_brake: '#e11d48',
+        brake:      '#f97316',
+        hard_accel: '#0891b2',
+        accel:      '#3662ff',
+        cruise:     '#059669',
+        start:      '#94a3b8',
+    };
+
+    const labels = rows.map(r => r.gps_time ? String(r.gps_time).slice(5, 16) : '');
+    const speeds = rows.map(r => Number(r.device_speed || 0));
+    const pointColors = rows.map(r => eventColor[r.event_label] || '#94a3b8');
+
+    state.speedProfileChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [{
+                label: 'Speed (km/h)',
+                data: speeds,
+                borderColor: palette.blue,
+                backgroundColor: 'rgba(54,98,255,0.10)',
+                borderWidth: 1.5,
+                pointRadius: rows.length > 200 ? 0 : 3,
+                pointBackgroundColor: pointColors,
+                pointBorderWidth: 0,
+                tension: 0.3,
+                fill: true,
+            }]
+        },
+        options: {
+            responsive: true,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        title: (items) => labels[items[0].dataIndex],
+                        label: (item) => {
+                            const r = rows[item.dataIndex];
+                            return [
+                                `Speed: ${formatDecimal(item.raw, 1)} km/h`,
+                                `Event: ${r.event_label || '—'}`,
+                                r.speed_delta != null ? `Δ speed: ${formatDecimal(r.speed_delta, 1)} km/h` : '',
+                                `Lat/Lon: ${formatDecimal(r.latitude,5)}, ${formatDecimal(r.longitude,5)}`,
+                            ].filter(Boolean);
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    grid: { display: false },
+                    ticks: { maxTicksLimit: 10, maxRotation: 45, font: { size: 10 } }
+                },
+                y: {
+                    min: 0,
+                    grid: { color: palette.grid },
+                    title: { display: true, text: 'km/h' }
+                }
+            }
+        }
+    });
 }
 
 async function loadOverview() {
@@ -945,14 +1155,20 @@ async function loadDeviceFullAnalysis(deviceId) {
 
 async function loadDeviceDetails(deviceId) {
     state.selectedDevice = deviceId;
-    const panels = ['device-summary', 'device-score-history', 'device-trip-candidates', 'device-map', 'device-recent-positions'];
+    const panels = [
+        'device-summary', 'device-score-history', 'device-trip-candidates',
+        'device-map', 'device-recent-positions', 'speed-profile', 'decel-spots',
+    ];
     setPanelLoading(panels, true);
     try {
-        const [summary, scores, trips, positions] = await Promise.all([
+        const [summary, scores, trips, positions, speedProfile, decelSpots, hotspots] = await Promise.all([
             fetchJson(`/api/devices/${encodeURIComponent(deviceId)}`),
             fetchJson(`/api/devices/${encodeURIComponent(deviceId)}/scores?days=30`),
             fetchJson(`/api/devices/${encodeURIComponent(deviceId)}/trip-candidates?limit=25`),
-            fetchJson(`/api/devices/${encodeURIComponent(deviceId)}/positions?limit=40`),
+            fetchJson(`/api/devices/${encodeURIComponent(deviceId)}/positions?limit=200`),
+            fetchJson(`/api/devices/${encodeURIComponent(deviceId)}/speed-profile?limit=300`).catch(() => []),
+            fetchJson(`/api/devices/${encodeURIComponent(deviceId)}/deceleration-spots?limit=60`).catch(() => []),
+            fetchJson(`/api/devices/${encodeURIComponent(deviceId)}/fleet-hotspots?days=30&limit=200`).catch(() => []),
         ]);
 
         renderDeviceSummary(summary);
@@ -960,10 +1176,19 @@ async function loadDeviceDetails(deviceId) {
         renderTripCandidates(trips);
         renderDeviceMap(positions, deviceId);
         renderRecentPositions(positions);
+        renderSpeedProfileChart(speedProfile);
+        renderDecelerationSpots(decelSpots);
+        renderFleetHotspots(hotspots);
+
+        // Respect current toggle state for new layers
+        const decelChk = document.getElementById('decelLayerToggle');
+        if (decelChk && decelChk.checked) state.deviceMap && state.decelLayer && state.decelLayer.addTo(state.deviceMap);
+        const hotspotChk = document.getElementById('hotspotLayerToggle');
+        if (hotspotChk && hotspotChk.checked) state.deviceMap && state.hotspotLayer && state.hotspotLayer.addTo(state.deviceMap);
     } finally {
         setPanelLoading(panels, false);
     }
-    // Fire deep analysis in parallel (non-blocking for the main panels above)
+    // Fire deep analysis independently (non-blocking)
     loadDeviceFullAnalysis(deviceId);
 }
 
@@ -971,9 +1196,7 @@ function registerEvents() {
     document.getElementById('refreshButton').addEventListener('click', loadOverview);
     document.getElementById('searchButton').addEventListener('click', searchDevices);
     document.getElementById('deviceSearch').addEventListener('keydown', event => {
-        if (event.key === 'Enter') {
-            searchDevices();
-        }
+        if (event.key === 'Enter') searchDevices();
     });
     document.getElementById('trendDays').addEventListener('change', async () => {
         setPanelLoading(['trend-chart'], true, 'Refreshing trend view…');
@@ -984,6 +1207,25 @@ function registerEvents() {
             setPanelLoading(['trend-chart'], false);
         }
     });
+
+    // Map layer toggles
+    const decelChk = document.getElementById('decelLayerToggle');
+    if (decelChk) {
+        decelChk.addEventListener('change', () => {
+            if (!state.deviceMap || !state.decelLayer) return;
+            if (decelChk.checked) state.decelLayer.addTo(state.deviceMap);
+            else state.deviceMap.removeLayer(state.decelLayer);
+        });
+    }
+
+    const hotspotChk = document.getElementById('hotspotLayerToggle');
+    if (hotspotChk) {
+        hotspotChk.addEventListener('change', () => {
+            if (!state.deviceMap || !state.hotspotLayer) return;
+            if (hotspotChk.checked) state.hotspotLayer.addTo(state.deviceMap);
+            else state.deviceMap.removeLayer(state.hotspotLayer);
+        });
+    }
 }
 
 async function bootstrap() {

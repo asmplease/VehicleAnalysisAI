@@ -82,6 +82,21 @@ def device_positions(device_id: str, limit: int = Query(default=100, ge=1, le=50
     return service.get_device_positions(device_id, limit)
 
 
+@app.get("/api/devices/{device_id}/deceleration-spots")
+def deceleration_spots(device_id: str, limit: int = Query(default=60, ge=5, le=200)) -> list[dict]:
+    return service.get_device_deceleration_spots(device_id, limit)
+
+
+@app.get("/api/devices/{device_id}/fleet-hotspots")
+def fleet_hotspots(device_id: str, days: int = Query(default=30, ge=7, le=90), limit: int = Query(default=200, ge=10, le=500)) -> list[dict]:
+    return service.get_fleet_hotspots_near_device(device_id, days, limit)
+
+
+@app.get("/api/devices/{device_id}/speed-profile")
+def speed_profile(device_id: str, limit: int = Query(default=300, ge=50, le=600)) -> list[dict]:
+    return service.get_device_speed_profile(device_id, limit)
+
+
 @app.get("/api/devices/{device_id}/trip-candidates")
 def trip_candidates(device_id: str, limit: int = Query(default=50, ge=1, le=500)) -> list[dict]:
     return service.get_trip_candidates(device_id, limit)

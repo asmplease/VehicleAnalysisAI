@@ -396,12 +396,59 @@ input {
 }
 
 .device-map {
-    height: 360px;
+    height: 420px;
     border-radius: 18px;
     overflow: hidden;
     border: 1px solid var(--border);
     background: linear-gradient(180deg, #f7fbff 0%, #eef4ff 100%);
 }
+
+/* Layer toggle bar */
+.map-layer-toggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.layer-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 13px;
+    border-radius: 999px;
+    border: 1.5px solid var(--border);
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    background: var(--surface);
+    transition: border-color 0.15s, background 0.15s;
+}
+
+.layer-toggle input[type=checkbox] {
+    accent-color: var(--accent);
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+}
+
+.layer-toggle:has(input:checked) {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.badge-sm {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 0.68rem;
+    font-weight: 700;
+}
+
+/* Map row with flexible height for wider content */
+.detail-grid-map .device-map { height: 420px; }
 
 .map-legend {
     display: flex;
@@ -426,6 +473,10 @@ input {
 .legend-dot.cruise { background: #3662ff; }
 .legend-dot.brisk { background: #d97706; }
 .legend-dot.aggressive { background: #e11d48; }
+.legend-dot.decel-dot  { background: #f97316; border: 2px solid #7c2d12; width: 12px; height: 12px; }
+.legend-dot.hotspot-dot { background: #8b5cf6; opacity: 0.55; width: 12px; height: 12px; }
+
+#speedProfileChart { max-height: 220px; }
 
 .leaflet-container {
     font-family: Inter, Segoe UI, Arial, sans-serif;

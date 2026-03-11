@@ -34,3 +34,5 @@ quality_*.txt
 *_output.json
 *_error.txt
 artifacts/
+server.log
+server_err.log
