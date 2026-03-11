@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin=""
+    >
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="page-shell">
+        <header class="hero">
+            <div class="hero-copy">
+                <p class="eyebrow">Read-only fleet intelligence</p>
+                <h1>VehicleAnalysisAI</h1>
+                <p class="subtitle">A brighter dashboard for device health, driver behaviour, trip signals, telemetry quality, and API-backed drilldowns.</p>
+                <div class="hero-actions">
+                    <button id="refreshButton" class="button button-primary">Refresh analytics</button>
+                    <a class="button button-secondary" href="/docs" target="_blank" rel="noreferrer">Open API docs</a>
+                </div>
+            </div>
+            <div class="hero-stack">
+                <div class="status-card" data-panel="connection">
+                    <h3>Connection</h3>
+                    <p class="muted">Every session is forced into read-only mode before queries execute.</p>
+                    <p id="healthStatus">Checking connectivity…</p>
+                </div>
+                <div class="status-card accent-card">
+                    <h3>Focus areas</h3>
+                    <ul class="bullet-list compact-list">
+                        <li>Driver score distribution</li>
+                        <li>Event mix and risk segmentation</li>
+                        <li>Bad telemetry hotspot detection</li>
+                        <li>Device-level score and trip exploration</li>
+                    </ul>
+                </div>
+            </div>
+        </header>
+
+        <main class="layout">
+            <section class="panel" data-panel="overview">
+                <div class="panel-header">
+                    <div>
+                        <p class="section-kicker">Snapshot</p>
+                        <h2>Operational overview</h2>
+                    </div>
+                </div>
+                <div id="overviewCards" class="cards"></div>
+            </section>
+
+            <section class="analytics-grid">
+                <section class="panel chart-panel" data-panel="risk-chart">
+                    <div class="panel-header">
+                        <div>
+                            <p class="section-kicker">Risk</p>
+                            <h2>Risk distribution</h2>
+                        </div>
+                    </div>
+                    <canvas id="riskChart"></canvas>
+                </section>
+
+                <section class="panel chart-panel wide-panel" data-panel="trend-chart">
+                    <div class="panel-header">
+                        <div>
+                            <p class="section-kicker">Trend</p>
+                            <h2>Daily score and event movement</h2>
+                        </div>
+                        <select id="trendDays">
+                            <option value="7">7 days</option>
+                            <option value="14" selected>14 days</option>
+                            <option value="30">30 days</option>
+                            <option value="60">60 days</option>
+                        </select>
+                    </div>
+                    <canvas id="trendChart"></canvas>
+                </section>
+
+                <section class="panel chart-panel" data-panel="event-mix">
+                    <div class="panel-header">
+                        <div>
+                            <p class="section-kicker">Events</p>
+                            <h2>Behaviour event mix</h2>
+                        </div>
+                    </div>
+                    <canvas id="eventMixChart"></canvas>
+                </section>
+
+                <section class="panel chart-panel" data-panel="vehicle-mix">
+                    <div class="panel-header">
+                        <div>
+                            <p class="section-kicker">Vehicles</p>
+                            <h2>Vehicle type mix</h2>
+                        </div>
+                    </div>
+                    <canvas id="vehicleMixChart"></canvas>
+                </section>
+
+                <section class="panel chart-panel wide-panel" data-panel="data-points">
+                    <div class="panel-header">
+                        <div>
+                            <p class="section-kicker">Telemetry</p>
+                            <h2>Data point activity</h2>
+                        </div>
+                    </div>
+                    <canvas id="dataPointsChart"></canvas>
+                </section>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="section-kicker">Leaderboards</p>
+                        <h2>Best and worst performers</h2>
+                    </div>
+                </div>
+                <div class="leaderboard-grid">
+                    <div class="mini-panel" data-panel="top-risky">
+                        <h3>Top risky devices</h3>
+                        <div id="topRiskyDevices" class="table-wrapper"></div>
+                    </div>
+                    <div class="mini-panel" data-panel="top-safe">
+                        <h3>Top safe devices</h3>
+                        <div id="topSafeDevices" class="table-wrapper"></div>
+                    </div>
+                    <div class="mini-panel" data-panel="quality-hotspots">
+                        <h3>Telemetry hotspots</h3>
+                        <div id="qualityHotspots" class="table-wrapper"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="section-kicker">Explorer</p>
+                        <h2>Device drill-down</h2>
+                    </div>
+                </div>
+                <div class="search-row">
+                    <input id="deviceSearch" type="text" placeholder="Search device id…">
+                    <button id="searchButton" class="button button-primary">Search</button>
+                </div>
+                <div class="mini-panel quick-device-panel" data-panel="latest-devices">
+                    <div class="panel-header compact-header">
+                        <div>
+                            <h3>Latest devices</h3>
+                            <p class="muted">Click a recent device to open its map and behaviour details.</p>
+                        </div>
+                    </div>
+                    <div id="latestDevices" class="quick-device-list"></div>
+                </div>
+                <div class="device-explorer-grid">
+                    <div class="mini-panel sticky-panel" data-panel="device-search-results">
+                        <h3>Matches</h3>
+                        <div id="searchResults" class="list"></div>
+                    </div>
+                    <div class="device-detail-stack">
+                        <div class="mini-panel" data-panel="device-summary">
+                            <h3>Device detail</h3>
+                            <div id="deviceSummary" class="detail-grid"></div>
+                        </div>
+                        <div class="detail-grid-2">
+                            <div class="mini-panel" data-panel="device-score-history">
+                                <h3>Score history</h3>
+                                <canvas id="deviceScoreChart"></canvas>
+                            </div>
+                            <div class="mini-panel" data-panel="device-trip-candidates">
+                                <h3>Trip candidates</h3>
+                                <div id="tripCandidates" class="table-wrapper"></div>
+                            </div>
+                        </div>
+                        <div class="detail-grid-2 detail-grid-map">
+                            <div class="mini-panel" data-panel="device-map">
+                                <div class="panel-header">
+                                    <div>
+                                        <h3>OpenStreetMap route view</h3>
+                                        <p class="muted">GPS points are colored by inferred behaviour from speed bands.</p>
+                                    </div>
+                                </div>
+                                <div id="deviceMap" class="device-map"></div>
+                                <div class="map-legend">
+                                    <span><i class="legend-dot stopped"></i>Stopped</span>
+                                    <span><i class="legend-dot calm"></i>Calm</span>
+                                    <span><i class="legend-dot cruise"></i>Cruising</span>
+                                    <span><i class="legend-dot brisk"></i>Brisk</span>
+                                    <span><i class="legend-dot aggressive"></i>Aggressive</span>
+                                </div>
+                            </div>
+                            <div class="mini-panel" data-panel="device-recent-positions">
+                                <h3>Recent telemetry points</h3>
+                                <div id="recentPositions" class="table-wrapper"></div>
+                            </div>
+                        </div>
+
+                        <!-- ── Deep Analysis ──────────────────────────────────────────── -->
+                        <div id="deepAnalysisSection" class="deep-analysis-section" hidden>
+                            <div class="deep-analysis-header">
+                                <p class="section-kicker">Full Analysis</p>
+                                <h3>Device &mdash; <span id="deepAnalysisTitle"></span></h3>
+                                <p class="muted">Score history, alert breakdown, fleet standing and GPS data quality for the selected device.</p>
+                            </div>
+
+                            <!-- KPI cards -->
+                            <div id="scoreStatsRow" class="score-stats-row"></div>
+
+                            <!-- Row 1: Alert mix donut + Fleet comparison -->
+                            <div class="analysis-row-2">
+                                <div class="mini-panel" data-panel="alert-mix">
+                                    <h3>Alert type mix</h3>
+                                    <div class="chart-container-sm">
+                                        <canvas id="alertMixChart"></canvas>
+                                    </div>
+                                </div>
+                                <div class="mini-panel" data-panel="fleet-comparison">
+                                    <h3>Fleet comparison</h3>
+                                    <canvas id="fleetCompareChart"></canvas>
+                                </div>
+                            </div>
+
+                            <!-- Row 2: Alert severity stacked bar -->
+                            <div class="mini-panel analysis-wide" data-panel="alert-severity">
+                                <h3>Alert severity breakdown</h3>
+                                <canvas id="alertSeverityChart"></canvas>
+                            </div>
+
+                            <!-- Row 3: Daily score + alert trend -->
+                            <div class="mini-panel analysis-wide" data-panel="daily-alert-trend">
+                                <h3>Daily score &amp; alert trend</h3>
+                                <canvas id="dailyAlertTrendChart"></canvas>
+                            </div>
+
+                            <!-- Row 4: Activity calendar + GPS quality -->
+                            <div class="analysis-row-2">
+                                <div class="mini-panel" data-panel="activity-calendar">
+                                    <h3>Activity calendar <span class="muted-sm">(last 30 days)</span></h3>
+                                    <div id="activityCalendar" class="activity-calendar"></div>
+                                </div>
+                                <div class="mini-panel" data-panel="gps-quality">
+                                    <h3>GPS data quality</h3>
+                                    <div id="gpsQuality" class="stat-list"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="section-kicker">Integration</p>
+                        <h2>Available API endpoints</h2>
+                    </div>
+                </div>
+                <ul class="endpoint-list">
+                    <li><span>GET</span> /api/health</li>
+                    <li><span>GET</span> /api/overview</li>
+                    <li><span>GET</span> /api/devices/latest?limit=12</li>
+                    <li><span>GET</span> /api/analytics/advanced</li>
+                    <li><span>GET</span> /api/trends/daily?days=14</li>
+                    <li><span>GET</span> /api/devices/search?q=860560</li>
+                    <li><span>GET</span> /api/devices/{device_id}</li>
+                    <li><span>GET</span> /api/devices/{device_id}/scores?days=30</li>
+                    <li><span>GET</span> /api/devices/{device_id}/positions?limit=100</li>
+                    <li><span>GET</span> /api/devices/{device_id}/trip-candidates?limit=50</li>
+                    <li><span>GET</span> /api/devices/{device_id}/full-analysis?days=30</li>
+                </ul>
+            </section>
+        </main>
+    </div>
+
+    <script
+        src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+        crossorigin=""
+    ></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>

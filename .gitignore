@@ -1,0 +1,36 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# Environment / secrets
+.env
+.env.*
+*.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary analysis / exploration scripts (generated during dev)
+db_*.py
+inspect_*.py
+drive_analytics_report.py
+kpis_*.txt
+kpis_*.json
+overview_*.json
+overview_*.txt
+profile_*.json
+profile_*.txt
+quality_*.json
+quality_*.txt
+*_output.json
+*_error.txt
+artifacts/

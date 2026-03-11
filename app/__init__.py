@@ -1,0 +1,1 @@
+"""VehicleAnalysisAI application package."""
