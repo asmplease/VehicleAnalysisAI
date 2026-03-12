@@ -163,3 +163,9 @@ def device_map(device_id: str):
 def device_route(device_id: str, day: int = None):
     """Ordered GPS track for a device from the raw table (latest day by default)."""
     return _safe_list(athena.get_device_gps_route, device_id, day)
+
+
+@app.get("/api/devices/{device_id}/days")
+def device_gps_days(device_id: str):
+    """Days in March with GPS track data — for the route date picker."""
+    return _safe_list(athena.get_device_gps_days, device_id)

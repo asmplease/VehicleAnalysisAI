@@ -91,6 +91,17 @@ def query_rows(sql: str) -> list[dict]:
     return df.where(pd.notnull(df), None).to_dict(orient="records")
 
 
+def _safe_float(v, default: float = 0.0) -> float:
+    """Convert pandas/numpy value to plain Python float.
+    Maps NaN / None / NaT → default so json.dumps never sees NaN.
+    """
+    try:
+        f = float(v)
+        return default if f != f else f  # f != f is True only for NaN
+    except (TypeError, ValueError):
+        return default
+
+
 # ─── Fleet-level ──────────────────────────────────────────────────────────────
 
 @cached(_FLEET_CACHE, key=lambda: hashkey('fleet_summary'), lock=_FLEET_LOCK)
@@ -305,8 +316,8 @@ def get_device_summary(device_id: str) -> dict:
         "harsh_braking":      hb_n,
         "harsh_acceleration": ha_n,
         "harsh_cornering":    rt_n,
-        "avg_speed":          float(hb.get("avg_s") or 0),
-        "max_speed":          float(hb.get("max_s") or 0),
+        "avg_speed":          _safe_float(hb.get("avg_s")),
+        "max_speed":          _safe_float(hb.get("max_s")),
         "is_safe_driver":     (hb_n + ha_n + rt_n) == 0,
     }
 
@@ -398,7 +409,7 @@ def get_device_gps_route(device_id: str, day: int = None) -> list[dict]:
     if day_df.empty:
         return []
     target_day = int(day_df.iloc[0]["day"])
-    return query_rows(f"""
+    rows = query_rows(f"""
         SELECT
             CAST(latitude  AS DOUBLE) AS latitude,
             CAST(longitude AS DOUBLE) AS longitude,
@@ -411,6 +422,32 @@ def get_device_gps_route(device_id: str, day: int = None) -> list[dict]:
           AND CAST(longitude AS DOUBLE) BETWEEN -180 AND 180
         ORDER BY gpstime
         LIMIT 2000
+    """)
+    # Deduplicate near-consecutive GPS pings (device parked / GPS jitter).
+    # Threshold ~16 m in degrees; keeps the polyline smooth without gaps.
+    THRESH = 0.00015
+    out, prev = [], None
+    for r in rows:
+        lat, lon = r.get('latitude'), r.get('longitude')
+        if lat is None or lon is None:
+            continue
+        if prev and abs(lat - prev[0]) < THRESH and abs(lon - prev[1]) < THRESH:
+            continue
+        out.append(r)
+        prev = (lat, lon)
+    return out
+
+
+@cached(_DEVICE_CACHE, key=lambda device_id: hashkey('dev_gps_days', device_id), lock=_DEVICE_LOCK)
+def get_device_gps_days(device_id: str) -> list[dict]:
+    """Days in March that have GPS track data for this device (route date picker)."""
+    safe = device_id.replace("'", "")
+    return query_rows(f"""
+        SELECT day, COUNT(*) AS gps_points
+        FROM raw
+        WHERE {_MARCH} AND deviceid='{safe}'
+          AND latitude IS NOT NULL AND longitude IS NOT NULL
+        GROUP BY day ORDER BY day
     """)
 
 

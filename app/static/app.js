@@ -353,7 +353,7 @@ let alertMap = null;
 const alertLayers = {}; // keyed by alert_type
 
 function initAlertMap() {
-  alertMap = L.map('alertMap', { preferCanvas: true, zoomControl: false, zoomAnimation: false }).setView([20.5937, 78.9629], 5);
+  alertMap = L.map('alertMap', { zoomControl: false }).setView([20.5937, 78.9629], 5);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
     subdomains: 'abcd',
@@ -423,11 +423,14 @@ document.querySelectorAll('.map-layer-toggle').forEach(cb => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 let deviceMap = null;
-let deviceMapLayer = null;
+let deviceMapLayer = null;  // alert event markers — persists across route reloads
+let _routeLayer    = null;  // GPS polyline only — swapped when day changes
+let _currentDeviceId   = null;
+let _currentAlertRows  = [];
 
 function initDeviceMap() {
   if (deviceMap) return;
-  deviceMap = L.map('deviceMap', { preferCanvas: true, zoomControl: false, zoomAnimation: false }).setView([20.5937, 78.9629], 5);
+  deviceMap = L.map('deviceMap', { zoomControl: false }).setView([20.5937, 78.9629], 5);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
     subdomains: 'abcd',
@@ -454,11 +457,12 @@ async function drillDevice(deviceId) {
   if (loadingEl) loadingEl.style.display = 'flex';
 
   // Load all in parallel
-  const [summary, daily, timeline, mapData] = await Promise.all([
+  const [summary, daily, timeline, mapData, days] = await Promise.all([
     api(`/api/devices/${deviceId}/summary`,      {}),
     api(`/api/devices/${deviceId}/daily-alerts`, []),
     api(`/api/devices/${deviceId}/timeline`,     []),
     api(`/api/devices/${deviceId}/map`,          []),
+    api(`/api/devices/${deviceId}/days`,         []),
   ]);
 
   // KPIs
@@ -496,10 +500,9 @@ async function drillDevice(deviceId) {
   // Timeline table
   buildTimelineTable(timeline);
 
-  // Map — alert markers + GPS route polyline in parallel
-  buildDeviceMap(mapData, deviceId);
-
+  // Map — alert markers + GPS route polyline
   if (loadingEl) loadingEl.style.display = 'none';
+  await buildDeviceMap(mapData, deviceId, days);
 
   // Scroll to drilldown
   document.getElementById('deviceDrilldown').scrollIntoView({ behavior: 'smooth' });
@@ -528,7 +531,8 @@ function buildDateStrip(daily) {
     } else {
       cls = 'bad'; tip = `Mar ${d}: \uD83D\uDD34 ${n} alerts`;
     }
-    cells.push(`<div class="ds-cell ${cls}" data-tip="${tip}">${d}</div>`);
+    const clk = (cls !== 'nodata') ? ` onclick="switchRouteDay(${d})" title="View route for Mar ${d}"` : '';
+    cells.push(`<div class="ds-cell ${cls}" data-tip="${tip}"${clk}>${d}</div>`);
   }
   el.innerHTML = cells.join('');
 }
@@ -571,37 +575,23 @@ function buildTimelineTable(rows) {
   `).join('');
 }
 
-async function buildDeviceMap(alertRows, deviceId) {
+async function buildDeviceMap(alertRows, deviceId, days) {
+  _currentDeviceId  = deviceId;
+  _currentAlertRows = alertRows;
+
+  // Clear previous layers
   if (deviceMapLayer) { deviceMap.removeLayer(deviceMapLayer); deviceMapLayer = null; }
+  if (_routeLayer)    { deviceMap.removeLayer(_routeLayer);    _routeLayer    = null; }
+
+  // ── Alert event markers (fixed layer — never reloaded on day switch) ──
   deviceMapLayer = L.layerGroup();
-  const allBoundsPts = [];
-
-  // ── GPS route polyline from raw table ──
-  try {
-    const route = await api(`/api/devices/${deviceId}/route`, []);
-    if (route && route.length > 1) {
-      const pts = route.map(r => [r.latitude, r.longitude]);
-      allBoundsPts.push(...pts);
-      L.polyline(pts, { color: C.accent, weight: 3, opacity: 0.8 })
-        .bindPopup(`<b>GPS Route</b><br>${route.length} points<br><small>${route[0].gpstime} → ${route[route.length-1].gpstime}</small>`)
-        .addTo(deviceMapLayer);
-      // Start marker (green)
-      L.circleMarker(pts[0], { radius: 8, color: '#fff', fillColor: C.green, fillOpacity: 1, weight: 2 })
-        .bindPopup(`<b>▶ Start</b><br>${route[0].gpstime}<br>${route[0].speed ?? '—'} km/h`)
-        .addTo(deviceMapLayer);
-      // End marker (dark)
-      L.circleMarker(pts[pts.length-1], { radius: 8, color: '#fff', fillColor: '#334155', fillOpacity: 1, weight: 2 })
-        .bindPopup(`<b>■ End</b><br>${route[route.length-1].gpstime}<br>${route[route.length-1].speed ?? '—'} km/h`)
-        .addTo(deviceMapLayer);
-    }
-  } catch (e) { /* route optional */ }
-
-  // ── Alert event markers ──
+  const alertPts = [];
   alertRows.forEach(r => {
     if (!r.latitude || !r.longitude) return;
-    allBoundsPts.push([r.latitude, r.longitude]);
+    alertPts.push([r.latitude, r.longitude]);
     const colour = alertColour(r.alerttype);
-    const lCls   = r.alerttype === 'harsh_braking' ? 'popup-hb' : r.alerttype === 'harsh_acceleration' ? 'popup-ha' : 'popup-rt';
+    const lCls = r.alerttype === 'harsh_braking' ? 'popup-hb'
+               : r.alerttype === 'harsh_acceleration' ? 'popup-ha' : 'popup-rt';
     L.circleMarker([r.latitude, r.longitude], {
       radius: 8, color: '#fff', fillColor: colour, fillOpacity: 0.9, weight: 1.5,
     }).bindPopup(`
@@ -610,13 +600,66 @@ async function buildDeviceMap(alertRows, deviceId) {
       <small style="color:#64748b">${r.gpstime ?? ''}</small>
     `).addTo(deviceMapLayer);
   });
-
   deviceMapLayer.addTo(deviceMap);
 
-  if (allBoundsPts.length > 0) {
-    deviceMap.fitBounds(L.latLngBounds(allBoundsPts), { padding: [30, 30] });
-    setTimeout(() => deviceMap.invalidateSize(), 100);
+  // ── Route day picker ──
+  const picker = document.getElementById('routeDayPicker');
+  if (picker) {
+    if (days && days.length > 0) {
+      const TODAY = 12; // March 12 2026
+      const sorted = [...days].sort((a, b) => a.day - b.day);
+      const defaultDay = (sorted.find(d => d.day === TODAY) || sorted[sorted.length - 1]).day;
+      picker.innerHTML = sorted.map(d =>
+        `<button class="route-day-btn${d.day === defaultDay ? ' active' : ''}"
+                 onclick="switchRouteDay(${d.day})" data-day="${d.day}">
+           Mar&nbsp;${d.day}
+         </button>`
+      ).join('');
+      await _loadRouteLayer(deviceId, defaultDay, alertPts);
+    } else {
+      picker.innerHTML = '<span class="no-days">No GPS track data in March</span>';
+      if (alertPts.length > 0)
+        deviceMap.fitBounds(L.latLngBounds(alertPts), { padding: [30, 30] });
+      setTimeout(() => deviceMap.invalidateSize(), 150);
+    }
   }
+}
+
+async function _loadRouteLayer(deviceId, day, alertPts) {
+  if (_routeLayer) { deviceMap.removeLayer(_routeLayer); _routeLayer = null; }
+  _routeLayer = L.layerGroup();
+  const routePts = [];
+  const dayParam  = day ? `?day=${day}` : '';
+  const route = await api(`/api/devices/${deviceId}/route${dayParam}`, []);
+  if (route && route.length > 1) {
+    const pts = route.map(r => [r.latitude, r.longitude]);
+    routePts.push(...pts);
+    L.polyline(pts, { color: C.accent, weight: 3, opacity: 0.85, smoothFactor: 3 })
+      .bindPopup(`<b>GPS Route — Mar ${day ?? '?'}</b><br>${route.length} pts<br>
+                  <small>${route[0].gpstime} → ${route[route.length-1].gpstime}</small>`)
+      .addTo(_routeLayer);
+    L.circleMarker(pts[0], { radius: 7, color: '#fff', fillColor: C.green, fillOpacity: 1, weight: 2 })
+      .bindPopup(`<b>▶ Start</b><br>${route[0].gpstime}<br>${route[0].speed ?? '—'} km/h`)
+      .addTo(_routeLayer);
+    L.circleMarker(pts[pts.length-1], { radius: 7, color: '#fff', fillColor: '#334155', fillOpacity: 1, weight: 2 })
+      .bindPopup(`<b>■ End</b><br>${route[route.length-1].gpstime}<br>${route[route.length-1].speed ?? '—'} km/h`)
+      .addTo(_routeLayer);
+  }
+  _routeLayer.addTo(deviceMap);
+  const allPts = [...routePts, ...alertPts];
+  if (allPts.length > 0)
+    deviceMap.fitBounds(L.latLngBounds(allPts), { padding: [30, 30] });
+  setTimeout(() => deviceMap.invalidateSize(), 150);
+}
+
+async function switchRouteDay(day) {
+  document.querySelectorAll('.route-day-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.day) === day)
+  );
+  const alertPts = _currentAlertRows
+    .filter(r => r.latitude && r.longitude)
+    .map(r => [r.latitude, r.longitude]);
+  await _loadRouteLayer(_currentDeviceId, day, alertPts);
 }
 
 // ── Device search ─────────────────────────────────────────────────────────────
