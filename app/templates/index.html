@@ -1,324 +1,276 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }}</title>
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <link
-        rel="stylesheet"
-        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-        crossorigin=""
-    >
-    <link rel="stylesheet" href="/static/styles.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
 <body>
-    <div class="page-shell">
-        <header class="hero">
-            <div class="hero-copy">
-                <p class="eyebrow">Read-only fleet intelligence</p>
-                <h1>VehicleAnalysisAI</h1>
-                <p class="subtitle">A brighter dashboard for device health, driver behaviour, trip signals, telemetry quality, and API-backed drilldowns.</p>
-                <div class="hero-actions">
-                    <button id="refreshButton" class="button button-primary">Refresh analytics</button>
-                    <a class="button button-secondary" href="/docs" target="_blank" rel="noreferrer">Open API docs</a>
-                </div>
-            </div>
-            <div class="hero-stack">
-                <div class="status-card" data-panel="connection">
-                    <h3>Connection</h3>
-                    <p class="muted">Every session is forced into read-only mode before queries execute.</p>
-                    <p id="healthStatus">Checking connectivity…</p>
-                </div>
-                <div class="status-card accent-card">
-                    <h3>Focus areas</h3>
-                    <ul class="bullet-list compact-list">
-                        <li>Driver score distribution</li>
-                        <li>Event mix and risk segmentation</li>
-                        <li>Bad telemetry hotspot detection</li>
-                        <li>Device-level score and trip exploration</li>
-                    </ul>
-                </div>
-            </div>
-        </header>
 
-        <main class="layout">
-            <section class="panel" data-panel="overview">
-                <div class="panel-header">
-                    <div>
-                        <p class="section-kicker">Snapshot</p>
-                        <h2>Operational overview</h2>
-                    </div>
-                </div>
-                <div id="overviewCards" class="cards"></div>
-            </section>
+<!-- ── Header ─────────────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="logo">🚗 VehicleAnalysisAI</span>
+    <span class="badge">March 2026</span>
+  </div>
+  <div class="topbar-right">
+    <span id="refreshTs" class="muted-text"></span>
+    <button id="btnRefresh" class="btn btn-primary">↺ Refresh</button>
+    <a href="/docs" target="_blank" class="btn btn-ghost">API Docs</a>
+  </div>
+</header>
 
-            <section class="analytics-grid">
-                <section class="panel chart-panel" data-panel="risk-chart">
-                    <div class="panel-header">
-                        <div>
-                            <p class="section-kicker">Risk</p>
-                            <h2>Risk distribution</h2>
-                        </div>
-                    </div>
-                    <canvas id="riskChart"></canvas>
-                </section>
+<!-- ── Tab nav ────────────────────────────────────────────────────────────── -->
+<nav class="tabnav">
+  <button class="tab active" data-tab="overview">Fleet Overview</button>
+  <button class="tab" data-tab="map">Alert Map</button>
+  <button class="tab" data-tab="device">Device Drilldown</button>
+</nav>
 
-                <section class="panel chart-panel wide-panel" data-panel="trend-chart">
-                    <div class="panel-header">
-                        <div>
-                            <p class="section-kicker">Trend</p>
-                            <h2>Daily score and event movement</h2>
-                        </div>
-                        <select id="trendDays">
-                            <option value="7">7 days</option>
-                            <option value="14" selected>14 days</option>
-                            <option value="30">30 days</option>
-                            <option value="60">60 days</option>
-                        </select>
-                    </div>
-                    <canvas id="trendChart"></canvas>
-                </section>
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     TAB 1 — Fleet Overview
+════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-overview" class="tab-content active">
 
-                <section class="panel chart-panel" data-panel="event-mix">
-                    <div class="panel-header">
-                        <div>
-                            <p class="section-kicker">Events</p>
-                            <h2>Behaviour event mix</h2>
-                        </div>
-                    </div>
-                    <canvas id="eventMixChart"></canvas>
-                </section>
+  <!-- KPI row: Bad driving -->
+  <div class="kpi-row" id="kpiRow">
+    <div class="kpi-card" id="kpi-total_alerts"><div class="kpi-val">—</div><div class="kpi-label">Total Alerts</div></div>
+    <div class="kpi-card hb" id="kpi-harsh_braking"><div class="kpi-val">—</div><div class="kpi-label">Harsh Braking</div></div>
+    <div class="kpi-card ha" id="kpi-harsh_acceleration"><div class="kpi-val">—</div><div class="kpi-label">Harsh Acceleration</div></div>
+    <div class="kpi-card rt" id="kpi-harsh_cornering"><div class="kpi-val">—</div><div class="kpi-label">Harsh Cornering</div></div>
+    <div class="kpi-card" id="kpi-avg_speed_at_alert"><div class="kpi-val">—</div><div class="kpi-label">Avg Speed at Alert km/h</div></div>
+    <div class="kpi-card" id="kpi-total_gps_points"><div class="kpi-val">—</div><div class="kpi-label">Total GPS Points</div></div>
+  </div>
 
-                <section class="panel chart-panel" data-panel="vehicle-mix">
-                    <div class="panel-header">
-                        <div>
-                            <p class="section-kicker">Vehicles</p>
-                            <h2>Vehicle type mix</h2>
-                        </div>
-                    </div>
-                    <canvas id="vehicleMixChart"></canvas>
-                </section>
+  <!-- KPI row: Good driving -->
+  <div class="kpi-row" id="kpiRowGood">
+    <div class="kpi-card good" id="kpi-safe_drivers"><div class="kpi-val">—</div><div class="kpi-label">Safe Drivers (0 alerts)</div></div>
+    <div class="kpi-card good" id="kpi-risky_drivers"><div class="kpi-val">—</div><div class="kpi-label">Risky Drivers</div></div>
+    <div class="kpi-card good" id="kpi-total_devices"><div class="kpi-val">—</div><div class="kpi-label">Total Active Devices</div></div>
+    <div class="kpi-card good" id="kpi-safe_driver_pct"><div class="kpi-val">—</div><div class="kpi-label">Safe Driver %</div></div>
+    <div class="kpi-card" id="kpi-alert_rate_per_1k"><div class="kpi-val">—</div><div class="kpi-label">Alerts per 1K GPS pts</div></div>
+    <div class="kpi-card" id="kpi-unique_devices" style="display:none"></div>
+  </div>
 
-                <section class="panel chart-panel wide-panel" data-panel="data-points">
-                    <div class="panel-header">
-                        <div>
-                            <p class="section-kicker">Telemetry</p>
-                            <h2>Data point activity</h2>
-                        </div>
-                    </div>
-                    <canvas id="dataPointsChart"></canvas>
-                </section>
-            </section>
+  <!-- Row A: Daily trend + Alert type split -->
+  <div class="chart-row">
+    <div class="chart-card wide">
+      <div class="card-header">
+        <h3>Daily Alert Trend</h3>
+        <span class="sub">Stacked by type — March 2026</span>
+      </div>
+      <canvas id="chartDailyTrend"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="card-header"><h3>Alert Type Split</h3></div>
+      <canvas id="chartAlertSplit"></canvas>
+    </div>
+  </div>
 
-            <section class="panel">
-                <div class="panel-header">
-                    <div>
-                        <p class="section-kicker">Leaderboards</p>
-                        <h2>Best and worst performers</h2>
-                    </div>
-                </div>
-                <div class="leaderboard-grid">
-                    <div class="mini-panel" data-panel="top-risky">
-                        <h3>Top risky devices</h3>
-                        <div id="topRiskyDevices" class="table-wrapper"></div>
-                    </div>
-                    <div class="mini-panel" data-panel="top-safe">
-                        <h3>Top safe devices</h3>
-                        <div id="topSafeDevices" class="table-wrapper"></div>
-                    </div>
-                    <div class="mini-panel" data-panel="quality-hotspots">
-                        <h3>Telemetry hotspots</h3>
-                        <div id="qualityHotspots" class="table-wrapper"></div>
-                    </div>
-                </div>
-            </section>
+  <!-- Row B: Hour of day + Vehicle type -->
+  <div class="chart-row">
+    <div class="chart-card wide">
+      <div class="card-header">
+        <h3>Alerts by Hour of Day</h3>
+        <span class="sub">When do incidents peak?</span>
+      </div>
+      <canvas id="chartHourly"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="card-header">
+        <h3>Top Alert Hotspot Locations</h3>
+        <select id="hotspotAlertType" class="select-sm">
+          <option value="harsh_braking" selected>Harsh Braking</option>
+          <option value="harsh_acceleration">Harsh Acceleration</option>
+          <option value="harsh_cornering">Harsh Cornering</option>
+        </select>
+      </div>
+      <div class="table-scroll" style="max-height:240px">
+        <table id="tblHotspotLocations">
+          <thead><tr><th>#</th><th>Latitude</th><th>Longitude</th><th>Events</th><th>Devices</th><th>Avg Speed</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
-            <section class="panel">
-                <div class="panel-header">
-                    <div>
-                        <p class="section-kicker">Explorer</p>
-                        <h2>Device drill-down</h2>
-                    </div>
-                </div>
-                <div class="search-row">
-                    <input id="deviceSearch" type="text" placeholder="Search device id…">
-                    <button id="searchButton" class="button button-primary">Search</button>
-                </div>
-                <div class="mini-panel quick-device-panel" data-panel="latest-devices">
-                    <div class="panel-header compact-header">
-                        <div>
-                            <h3>Latest devices</h3>
-                            <p class="muted">Click a recent device to open its map and behaviour details.</p>
-                        </div>
-                    </div>
-                    <div id="latestDevices" class="quick-device-list"></div>
-                </div>
-                <div class="device-explorer-grid">
-                    <div class="mini-panel sticky-panel" data-panel="device-search-results">
-                        <h3>Matches</h3>
-                        <div id="searchResults" class="list"></div>
-                    </div>
-                    <div class="device-detail-stack">
-                        <div class="mini-panel" data-panel="device-summary">
-                            <h3>Device detail</h3>
-                            <div id="deviceSummary" class="detail-grid"></div>
-                        </div>
-                        <div class="detail-grid-2">
-                            <div class="mini-panel" data-panel="device-score-history">
-                                <h3>Score history</h3>
-                                <canvas id="deviceScoreChart"></canvas>
-                            </div>
-                            <div class="mini-panel" data-panel="device-trip-candidates">
-                                <h3>Trip candidates</h3>
-                                <div id="tripCandidates" class="table-wrapper"></div>
-                            </div>
-                        </div>
-                        <div class="detail-grid-2 detail-grid-map">
-                            <div class="mini-panel" data-panel="device-map">
-                                <div class="panel-header">
-                                    <div>
-                                        <h3>OpenStreetMap route view</h3>
-                                        <p class="muted">Route, speed-breaker candidates, and fleet hotspot density layers.</p>
-                                    </div>
-                                </div>
-                                <!-- Layer toggles -->
-                                <div class="map-layer-toggles" id="mapLayerToggles">
-                                    <label class="layer-toggle active" data-layer="route">
-                                        <input type="checkbox" checked> Route &amp; speed bands
-                                    </label>
-                                    <label class="layer-toggle" data-layer="decel" id="decelToggleLabel">
-                                        <input type="checkbox" id="decelLayerToggle"> Speed breakers <span id="decelCount" class="badge-sm"></span>
-                                    </label>
-                                    <label class="layer-toggle" data-layer="hotspots" id="hotspotToggleLabel">
-                                        <input type="checkbox" id="hotspotLayerToggle"> Fleet hotspots <span id="hotspotCount" class="badge-sm"></span>
-                                    </label>
-                                </div>
-                                <div id="deviceMap" class="device-map"></div>
-                                <div class="map-legend">
-                                    <span><i class="legend-dot stopped"></i>Stopped</span>
-                                    <span><i class="legend-dot calm"></i>Calm</span>
-                                    <span><i class="legend-dot cruise"></i>Cruising</span>
-                                    <span><i class="legend-dot brisk"></i>Brisk</span>
-                                    <span><i class="legend-dot aggressive"></i>Aggressive</span>
-                                    <span><i class="legend-dot decel-dot"></i>Speed breaker</span>
-                                    <span><i class="legend-dot hotspot-dot"></i>Fleet hotspot</span>
-                                </div>
-                            </div>
-                            <div class="mini-panel" data-panel="device-recent-positions">
-                                <h3>Recent telemetry points</h3>
-                                <div id="recentPositions" class="table-wrapper"></div>
-                            </div>
-                        </div>
+  <!-- Row C: Speed distribution + Top risky devices table -->
+  <div class="chart-row">
+    <div class="chart-card">
+      <div class="card-header">
+        <h3>Speed at Alert</h3>
+        <select id="speedAlertType" class="select-sm">
+          <option value="harsh_braking" selected>Harsh Braking</option>
+          <option value="harsh_acceleration">Harsh Acceleration</option>
+          <option value="harsh_cornering">Harsh Cornering</option>
+        </select>
+      </div>
+      <canvas id="chartSpeed"></canvas>
+    </div>
+    <div class="chart-card wide">
+      <div class="card-header">
+        <h3>Top Risky Devices</h3>
+        <span class="sub">Ranked by total alerts — March 2026</span>
+      </div>
+      <div class="table-scroll">
+        <table id="tblTopDevices">
+          <thead>
+            <tr>
+              <th>#</th><th>Device ID</th>
+              <th class="hb-col">HB</th><th class="ha-col">HA</th><th class="rt-col">RT</th>
+              <th>Total</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
-                        <!-- Speed Profile + Deceleration Spots -->
-                        <div class="mini-panel" data-panel="speed-profile">
-                            <div class="panel-header compact-header">
-                                <div>
-                                    <h3>Speed profile over time</h3>
-                                    <p class="muted">Speed (km/h) per GPS point — coloured by event type (hard brake, accel, cruise).</p>
-                                </div>
-                            </div>
-                            <canvas id="speedProfileChart"></canvas>
-                        </div>
+  <!-- Row D: Good Driving Behavior -->
+  <div class="section-heading">✅ Good Driving Behaviour</div>
+  <div class="chart-row">
+    <div class="chart-card">
+      <div class="card-header"><h3>Driver Safety Split</h3><span class="sub">Safe vs Risky — March 2026</span></div>
+      <canvas id="chartDriverSplit"></canvas>
+    </div>
+    <div class="chart-card wide">
+      <div class="card-header">
+        <h3>Top Safe Drivers</h3>
+        <span class="sub">Most active devices with zero alerts — March 2026</span>
+      </div>
+      <div class="table-scroll">
+        <table id="tblSafeDrivers">
+          <thead>
+            <tr>
+              <th>#</th><th>Device ID</th>
+              <th>GPS Points</th><th>Active Days</th><th>Avg Pts/Day</th><th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 
-                        <div class="mini-panel" data-panel="decel-spots">
-                            <div class="panel-header compact-header">
-                                <div>
-                                    <h3>Speed breaker / deceleration hotspots</h3>
-                                    <p class="muted">Candidate speed-bump locations detected from consecutive GPS speed drops. Click a row to fly the map to that point.</p>
-                                </div>
-                            </div>
-                            <div id="decelSpotsTable" class="table-wrapper"></div>
-                        </div>
+</div><!-- /tab-overview -->
 
-                        <!-- ── Deep Analysis ──────────────────────────────────────────── -->
-                        <div id="deepAnalysisSection" class="deep-analysis-section" hidden>
-                            <div class="deep-analysis-header">
-                                <p class="section-kicker">Full Analysis</p>
-                                <h3>Device &mdash; <span id="deepAnalysisTitle"></span></h3>
-                                <p class="muted">Score history, alert breakdown, fleet standing and GPS data quality for the selected device.</p>
-                            </div>
 
-                            <!-- KPI cards -->
-                            <div id="scoreStatsRow" class="score-stats-row"></div>
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     TAB 2 — Alert Map
+════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-map" class="tab-content">
+  <div class="map-toolbar">
+    <label class="toggle-label hb-label">
+      <input type="checkbox" class="map-layer-toggle" value="harsh_braking" checked>
+      <span class="toggle-dot hb-dot"></span> Harsh Braking
+    </label>
+    <label class="toggle-label ha-label">
+      <input type="checkbox" class="map-layer-toggle" value="harsh_acceleration">
+      <span class="toggle-dot ha-dot"></span> Harsh Acceleration
+    </label>
+    <label class="toggle-label rt-label">
+      <input type="checkbox" class="map-layer-toggle" value="harsh_cornering">
+      <span class="toggle-dot rt-dot"></span> Harsh Cornering
+    </label>
+    <span id="mapStatus" class="muted-text"></span>
+  </div>
+  <div class="map-wrap">
+    <div id="alertMap" class="full-map"></div>
+    <div id="alertMapLoading" class="map-loading-overlay" style="display:none">
+      <div class="spinner"></div> Loading hotspots…
+    </div>
+  </div>
+</div>
 
-                            <!-- Row 1: Alert mix donut + Fleet comparison -->
-                            <div class="analysis-row-2">
-                                <div class="mini-panel" data-panel="alert-mix">
-                                    <h3>Alert type mix</h3>
-                                    <div class="chart-container-sm">
-                                        <canvas id="alertMixChart"></canvas>
-                                    </div>
-                                </div>
-                                <div class="mini-panel" data-panel="fleet-comparison">
-                                    <h3>Fleet comparison</h3>
-                                    <canvas id="fleetCompareChart"></canvas>
-                                </div>
-                            </div>
 
-                            <!-- Row 2: Alert severity stacked bar -->
-                            <div class="mini-panel analysis-wide" data-panel="alert-severity">
-                                <h3>Alert severity breakdown</h3>
-                                <canvas id="alertSeverityChart"></canvas>
-                            </div>
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     TAB 3 — Device Drilldown
+════════════════════════════════════════════════════════════════════════════ -->
+<div id="tab-device" class="tab-content">
 
-                            <!-- Row 3: Daily score + alert trend -->
-                            <div class="mini-panel analysis-wide" data-panel="daily-alert-trend">
-                                <h3>Daily score &amp; alert trend</h3>
-                                <canvas id="dailyAlertTrendChart"></canvas>
-                            </div>
+  <!-- Search bar -->
+  <div class="device-search-bar">
+    <input id="deviceSearchInput" type="text" placeholder="Search device ID (min 3 chars)…" class="search-input">
+    <button id="btnDeviceSearch" class="btn btn-primary">Search</button>
+  </div>
+  <div id="deviceSearchResults" class="search-results"></div>
 
-                            <!-- Row 4: Activity calendar + GPS quality -->
-                            <div class="analysis-row-2">
-                                <div class="mini-panel" data-panel="activity-calendar">
-                                    <h3>Activity calendar <span class="muted-sm">(last 30 days)</span></h3>
-                                    <div id="activityCalendar" class="activity-calendar"></div>
-                                </div>
-                                <div class="mini-panel" data-panel="gps-quality">
-                                    <h3>GPS data quality</h3>
-                                    <div id="gpsQuality" class="stat-list"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </section>
+  <!-- Drilldown content — hidden until a device is selected -->
+  <div id="deviceDrilldown" class="hidden">
 
-            <section class="panel">
-                <div class="panel-header">
-                    <div>
-                        <p class="section-kicker">Integration</p>
-                        <h2>Available API endpoints</h2>
-                    </div>
-                </div>
-                <ul class="endpoint-list">
-                    <li><span>GET</span> /api/health</li>
-                    <li><span>GET</span> /api/overview</li>
-                    <li><span>GET</span> /api/devices/latest?limit=12</li>
-                    <li><span>GET</span> /api/analytics/advanced</li>
-                    <li><span>GET</span> /api/trends/daily?days=14</li>
-                    <li><span>GET</span> /api/devices/search?q=860560</li>
-                    <li><span>GET</span> /api/devices/{device_id}</li>
-                    <li><span>GET</span> /api/devices/{device_id}/scores?days=30</li>
-                    <li><span>GET</span> /api/devices/{device_id}/positions?limit=100</li>
-                    <li><span>GET</span> /api/devices/{device_id}/trip-candidates?limit=50</li>
-                    <li><span>GET</span> /api/devices/{device_id}/full-analysis?days=30</li>
-                    <li><span>GET</span> /api/devices/{device_id}/speed-profile?limit=300</li>
-                    <li><span>GET</span> /api/devices/{device_id}/deceleration-spots?limit=60</li>
-                    <li><span>GET</span> /api/devices/{device_id}/fleet-hotspots?days=30&amp;limit=200</li>
-                </ul>
-            </section>
-        </main>
+    <!-- Device KPI row -->
+    <div class="device-header">
+      <div class="device-title" id="deviceTitle">Device —</div>
+      <div class="device-meta" id="deviceMeta"></div>
+    </div>
+    <div class="kpi-row" id="deviceKpiRow">
+      <div class="kpi-card hb" id="dkpi-harsh_braking"><div class="kpi-val">—</div><div class="kpi-label">Harsh Braking</div></div>
+      <div class="kpi-card ha" id="dkpi-harsh_acceleration"><div class="kpi-val">—</div><div class="kpi-label">Harsh Acceleration</div></div>
+      <div class="kpi-card rt" id="dkpi-harsh_cornering"><div class="kpi-val">—</div><div class="kpi-label">Harsh Cornering</div></div>
+      <div class="kpi-card" id="dkpi-total_alerts"><div class="kpi-val">—</div><div class="kpi-label">Total Alerts</div></div>
+      <div class="kpi-card" id="dkpi-avg_speed"><div class="kpi-val">—</div><div class="kpi-label">Avg Speed km/h</div></div>
+      <div class="kpi-card" id="dkpi-max_speed"><div class="kpi-val">—</div><div class="kpi-label">Max Speed km/h</div></div>
+      <div class="kpi-card good" id="dkpi-safe_badge"><div class="kpi-val" id="safeBadge">—</div><div class="kpi-label">Driver Status</div></div>
     </div>
 
-    <script
-        src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-        crossorigin=""
-    ></script>
-    <script src="/static/app.js"></script>
+    <!-- March date strip: one cell per day, coloured by alert volume -->
+    <div class="date-strip-wrap">
+      <div class="date-strip-label">March 2026 — Daily Behaviour (hover for detail)</div>
+      <div id="dateBand" class="date-strip"></div>
+      <div class="date-strip-legend">
+        <span class="ds-legend-dot good"></span> Safe &nbsp;
+        <span class="ds-legend-dot mild"></span> 1–3 alerts &nbsp;
+        <span class="ds-legend-dot bad"></span> 4+ alerts &nbsp;
+        <span class="ds-legend-dot nodata"></span> No data
+      </div>
+    </div>
+
+    <!-- Daily alerts chart + Device map side-by-side -->
+    <div class="chart-row">
+      <div class="chart-card">
+        <div class="card-header"><h3>Daily Alerts</h3></div>
+        <canvas id="chartDeviceDaily"></canvas>
+      </div>
+      <div class="chart-card wide">
+        <div class="card-header"><h3>Alert Locations Map</h3></div>
+        <div class="map-wrap">
+          <div id="deviceMap" class="device-map"></div>
+          <div id="deviceMapLoading" class="map-loading-overlay" style="display:none">
+            <div class="spinner"></div> Loading route &amp; alerts…
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Alert timeline table -->
+    <div class="chart-card full-width">
+      <div class="card-header">
+        <h3>Alert Timeline</h3>
+        <span class="sub" id="timelineCount"></span>
+      </div>
+      <div class="table-scroll">
+        <table id="tblTimeline">
+          <thead>
+            <tr>
+              <th>Timestamp</th><th>Alert</th><th>Display Name</th>
+              <th>Speed km/h</th><th>Latitude</th><th>Longitude</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /deviceDrilldown -->
+
+</div><!-- /tab-device -->
+
+<script src="/static/app.js"></script>
 </body>
 </html>

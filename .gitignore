@@ -10,6 +10,7 @@ __pycache__/
 .env
 .env.*
 *.env
+*.env.local
 
 # IDE
 .vscode/
@@ -22,6 +23,7 @@ Thumbs.db
 # Temporary analysis / exploration scripts (generated during dev)
 db_*.py
 inspect_*.py
+test_athena.py
 drive_analytics_report.py
 kpis_*.txt
 kpis_*.json
