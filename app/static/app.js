@@ -427,6 +427,7 @@ let deviceMapLayer = null;  // alert event markers — persists across route rel
 let _routeLayer    = null;  // GPS polyline only — swapped when day changes
 let _currentDeviceId   = null;
 let _currentAlertRows  = [];
+let _alertsVisible     = true;  // toggle state for alert markers
 
 function initDeviceMap() {
   if (deviceMap) return;
@@ -456,14 +457,14 @@ async function drillDevice(deviceId) {
   const loadingEl = document.getElementById('deviceMapLoading');
   if (loadingEl) loadingEl.style.display = 'flex';
 
-  // Load all in parallel
-  const [summary, daily, timeline, mapData, days] = await Promise.all([
+  // Load all in parallel (skip map — alerts loaded per day inside _loadRouteLayer)
+  const [summary, daily, timeline, days] = await Promise.all([
     api(`/api/devices/${deviceId}/summary`,      {}),
     api(`/api/devices/${deviceId}/daily-alerts`, []),
     api(`/api/devices/${deviceId}/timeline`,     []),
-    api(`/api/devices/${deviceId}/map`,          []),
     api(`/api/devices/${deviceId}/days`,         []),
   ]);
+  _currentAlertRows = [];  // cleared; _loadRouteLayer fetches per day
 
   // KPIs
   const dkpis = {
@@ -502,7 +503,7 @@ async function drillDevice(deviceId) {
 
   // Map — alert markers + GPS route polyline
   if (loadingEl) loadingEl.style.display = 'none';
-  await buildDeviceMap(mapData, deviceId, days);
+  await buildDeviceMap(deviceId, days);
 
   // Scroll to drilldown
   document.getElementById('deviceDrilldown').scrollIntoView({ behavior: 'smooth' });
@@ -575,20 +576,62 @@ function buildTimelineTable(rows) {
   `).join('');
 }
 
-async function buildDeviceMap(alertRows, deviceId, days) {
+async function buildDeviceMap(deviceId, days) {
   _currentDeviceId  = deviceId;
-  _currentAlertRows = alertRows;
+  _currentAlertRows = [];   // will be populated per day by _loadRouteLayer
 
   // Clear previous layers
   if (deviceMapLayer) { deviceMap.removeLayer(deviceMapLayer); deviceMapLayer = null; }
   if (_routeLayer)    { deviceMap.removeLayer(_routeLayer);    _routeLayer    = null; }
 
-  // ── Alert event markers (fixed layer — never reloaded on day switch) ──
+  // ── Route day picker ──
+  const picker = document.getElementById('routeDayPicker');
+  if (picker) {
+    if (days && days.length > 0) {
+      const TODAY = 12; // March 12 2026
+      const sorted = [...days].sort((a, b) => a.day - b.day);
+      const defaultDay = (sorted.find(d => d.day === TODAY) || sorted[sorted.length - 1]).day;
+      picker.innerHTML =
+        sorted.map(d =>
+          `<button class="route-day-btn${d.day === defaultDay ? ' active' : ''}"
+                   onclick="switchRouteDay(${d.day})" data-day="${d.day}">
+             Mar&nbsp;${d.day}
+           </button>`
+        ).join('') +
+        `<span class="picker-sep"></span>
+         <button id="alertsToggleBtn" class="alerts-toggle-btn on" onclick="toggleAlerts()">
+           ● Alerts
+         </button>`;
+      await _loadRouteLayer(deviceId, defaultDay);
+    } else {
+      picker.innerHTML = '<span class="no-days">No GPS track data in March</span>';
+      _rebuildAlertLayer();
+      setTimeout(() => deviceMap.invalidateSize(), 150);
+    }
+  }
+}
+
+/** Toggle alert markers on/off. */
+function toggleAlerts() {
+  _alertsVisible = !_alertsVisible;
+  const btn = document.getElementById('alertsToggleBtn');
+  if (_alertsVisible) {
+    if (deviceMapLayer) deviceMap.addLayer(deviceMapLayer);
+    if (btn) { btn.classList.add('on'); btn.classList.remove('off'); }
+  } else {
+    if (deviceMapLayer) deviceMap.removeLayer(deviceMapLayer);
+    if (btn) { btn.classList.add('off'); btn.classList.remove('on'); }
+  }
+}
+
+/** Rebuild the alert-event marker layer from _currentAlertRows (already day-filtered). */
+function _rebuildAlertLayer() {
+  if (deviceMapLayer) { deviceMap.removeLayer(deviceMapLayer); deviceMapLayer = null; }
   deviceMapLayer = L.layerGroup();
-  const alertPts = [];
-  alertRows.forEach(r => {
+  const pts = [];
+  _currentAlertRows.forEach(r => {
     if (!r.latitude || !r.longitude) return;
-    alertPts.push([r.latitude, r.longitude]);
+    pts.push([r.latitude, r.longitude]);
     const colour = alertColour(r.alerttype);
     const lCls = r.alerttype === 'harsh_braking' ? 'popup-hb'
                : r.alerttype === 'harsh_acceleration' ? 'popup-ha' : 'popup-rt';
@@ -600,41 +643,35 @@ async function buildDeviceMap(alertRows, deviceId, days) {
       <small style="color:#64748b">${r.gpstime ?? ''}</small>
     `).addTo(deviceMapLayer);
   });
-  deviceMapLayer.addTo(deviceMap);
-
-  // ── Route day picker ──
-  const picker = document.getElementById('routeDayPicker');
-  if (picker) {
-    if (days && days.length > 0) {
-      const TODAY = 12; // March 12 2026
-      const sorted = [...days].sort((a, b) => a.day - b.day);
-      const defaultDay = (sorted.find(d => d.day === TODAY) || sorted[sorted.length - 1]).day;
-      picker.innerHTML = sorted.map(d =>
-        `<button class="route-day-btn${d.day === defaultDay ? ' active' : ''}"
-                 onclick="switchRouteDay(${d.day})" data-day="${d.day}">
-           Mar&nbsp;${d.day}
-         </button>`
-      ).join('');
-      await _loadRouteLayer(deviceId, defaultDay, alertPts);
-    } else {
-      picker.innerHTML = '<span class="no-days">No GPS track data in March</span>';
-      if (alertPts.length > 0)
-        deviceMap.fitBounds(L.latLngBounds(alertPts), { padding: [30, 30] });
-      setTimeout(() => deviceMap.invalidateSize(), 150);
-    }
+  // Respect current toggle state
+  if (_alertsVisible) {
+    deviceMapLayer.addTo(deviceMap);
   }
+  // Keep toggle button in sync
+  const btn = document.getElementById('alertsToggleBtn');
+  if (btn) {
+    btn.classList.toggle('on', _alertsVisible);
+    btn.classList.toggle('off', !_alertsVisible);
+  }
+  return pts;
 }
 
-async function _loadRouteLayer(deviceId, day, alertPts) {
+async function _loadRouteLayer(deviceId, day) {
   if (_routeLayer) { deviceMap.removeLayer(_routeLayer); _routeLayer = null; }
+
+  // Fetch alerts for this specific day from server (avoids LIMIT sampling issues)
+  const dayAlerts = await api(`/api/devices/${deviceId}/map?day=${day}`, []);
+  _currentAlertRows = dayAlerts;
+  const alertPts = _rebuildAlertLayer();
+
   _routeLayer = L.layerGroup();
   const routePts = [];
-  const dayParam  = day ? `?day=${day}` : '';
+  const dayParam = day ? `?day=${day}` : '';
   const route = await api(`/api/devices/${deviceId}/route${dayParam}`, []);
   if (route && route.length > 1) {
     const pts = route.map(r => [r.latitude, r.longitude]);
     routePts.push(...pts);
-    L.polyline(pts, { color: C.accent, weight: 3, opacity: 0.85, smoothFactor: 3 })
+    L.polyline(pts, { color: C.accent, weight: 3, opacity: 0.85, smoothFactor: 2 })
       .bindPopup(`<b>GPS Route — Mar ${day ?? '?'}</b><br>${route.length} pts<br>
                   <small>${route[0].gpstime} → ${route[route.length-1].gpstime}</small>`)
       .addTo(_routeLayer);
@@ -656,10 +693,7 @@ async function switchRouteDay(day) {
   document.querySelectorAll('.route-day-btn').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.day) === day)
   );
-  const alertPts = _currentAlertRows
-    .filter(r => r.latitude && r.longitude)
-    .map(r => [r.latitude, r.longitude]);
-  await _loadRouteLayer(_currentDeviceId, day, alertPts);
+  await _loadRouteLayer(_currentDeviceId, day);
 }
 
 // ── Device search ─────────────────────────────────────────────────────────────

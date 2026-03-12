@@ -154,9 +154,9 @@ def device_daily_alerts(device_id: str):
 
 
 @app.get("/api/devices/{device_id}/map")
-def device_map(device_id: str):
-    """All alert locations for this device."""
-    return _safe_list(athena.get_device_alert_map, device_id)
+def device_map(device_id: str, day: int = None):
+    """Alert locations for this device, optionally filtered to a single day."""
+    return _safe_list(athena.get_device_alert_map, device_id, day)
 
 
 @app.get("/api/devices/{device_id}/route")

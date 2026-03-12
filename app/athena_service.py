@@ -369,8 +369,9 @@ def get_device_daily_alerts(device_id: str) -> list[dict]:
 
 
 @cached(_DEVICE_CACHE, key=lambda device_id: hashkey('dev_map', device_id), lock=_DEVICE_LOCK)
-def get_device_alert_map(device_id: str) -> list[dict]:
+def get_device_alert_map(device_id: str, day: int = None) -> list[dict]:
     safe = device_id.replace("'", "")
+    day_filter = f"AND DAY(CAST(gpstime AS DATE)) = {int(day)}" if day else ""
     return query_rows(f"""
         SELECT
             CAST(latitude  AS DOUBLE) AS latitude,
@@ -388,7 +389,8 @@ def get_device_alert_map(device_id: str) -> list[dict]:
             FROM harsh_cornering     WHERE {_MARCH} AND deviceid='{safe}'
         )
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-        LIMIT 1000
+        {day_filter}
+        LIMIT 2000
     """)
 
 
@@ -424,15 +426,24 @@ def get_device_gps_route(device_id: str, day: int = None) -> list[dict]:
         LIMIT 2000
     """)
     # Deduplicate near-consecutive GPS pings (device parked / GPS jitter).
-    # Threshold ~16 m in degrees; keeps the polyline smooth without gaps.
-    THRESH = 0.00015
+    # Threshold ~16 m in degrees.
+    DEDUP = 0.00015
+    # Max jump ~33 km in degrees — anything larger is a GPS teleport / bad datum.
+    MAX_JUMP = 0.30
     out, prev = [], None
     for r in rows:
         lat, lon = r.get('latitude'), r.get('longitude')
         if lat is None or lon is None:
             continue
-        if prev and abs(lat - prev[0]) < THRESH and abs(lon - prev[1]) < THRESH:
-            continue
+        if prev:
+            dlat = abs(lat - prev[0])
+            dlon = abs(lon - prev[1])
+            # Skip GPS outlier — keep prev as anchor so next valid point continues
+            if dlat > MAX_JUMP or dlon > MAX_JUMP:
+                continue
+            # Skip near-duplicate stationary ping
+            if dlat < DEDUP and dlon < DEDUP:
+                continue
         out.append(r)
         prev = (lat, lon)
     return out
