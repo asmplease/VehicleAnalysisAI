@@ -3,8 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load .env from repo root (no-op if file is absent or vars already set)
+load_dotenv(BASE_DIR / ".env", override=False)
 TEMPLATES_DIR = BASE_DIR / "app" / "templates"
 STATIC_DIR = BASE_DIR / "app" / "static"
 ARTIFACTS_DIR = BASE_DIR / "artifacts"

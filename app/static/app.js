@@ -458,6 +458,7 @@ async function drillDevice(deviceId) {
   if (loadingEl) loadingEl.style.display = 'flex';
 
   // Load all in parallel (skip map — alerts loaded per day inside _loadRouteLayer)
+  // driver-score is loaded separately below so it doesn't block the main UI
   const [summary, daily, timeline, days] = await Promise.all([
     api(`/api/devices/${deviceId}/summary`,      {}),
     api(`/api/devices/${deviceId}/daily-alerts`, []),
@@ -501,12 +502,118 @@ async function drillDevice(deviceId) {
   // Timeline table
   buildTimelineTable(timeline);
 
+  // Driver score panel — loaded async AFTER main UI renders (PG may be slow)
+  buildDriverScorePanel({profile:{}, daily:[]});  // show empty state immediately
+  api(`/api/devices/${deviceId}/driver-score`, {profile:{}, daily:[]})
+    .then(scoreData => buildDriverScorePanel(scoreData));
+
   // Map — alert markers + GPS route polyline
   if (loadingEl) loadingEl.style.display = 'none';
   await buildDeviceMap(deviceId, days);
 
   // Scroll to drilldown
   document.getElementById('deviceDrilldown').scrollIntoView({ behavior: 'smooth' });
+}
+
+// ── Driver Score Panel (PostgreSQL) ──────────────────────────────────────────
+
+function buildDriverScorePanel(data) {
+  const profile = data?.profile ?? {};
+  const daily   = data?.daily   ?? [];
+
+  // ── Score ring ──
+  const score = profile.score_today ?? null;
+  const bigEl = document.getElementById('scoreBigNum');
+  const arcEl = document.getElementById('scoreRingArc');
+  if (bigEl) bigEl.textContent = score !== null ? score : '—';
+  if (arcEl) {
+    const pct        = score !== null ? Math.max(0, Math.min(100, score)) / 100 : 0;
+    const circumf    = 2 * Math.PI * 48;   // r=48
+    const dash       = pct * circumf;
+    arcEl.style.strokeDasharray  = `${dash.toFixed(1)} ${circumf.toFixed(1)}`;
+    // Colour: green ≥85, yellow ≥70, orange ≥50, red <50
+    arcEl.style.stroke = score === null ? '#cbd5e1'
+      : score >= 85 ? '#16a34a'
+      : score >= 70 ? '#ca8a04'
+      : score >= 50 ? '#ea580c'
+      : '#dc2626';
+  }
+
+  // ── Stats ──
+  const setText = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val ?? '—'; };
+  setText('scoreToday',       score !== null ? score : null);
+  setText('score7d',          profile.score_7day_avg  ?? null);
+  setText('score30d',         profile.score_30day_avg ?? null);
+  const todayRow = daily.length ? daily[daily.length - 1] : null;
+  setText('scoreDeductions',  todayRow?.total_deductions != null
+    ? `−${todayRow.total_deductions}` : null);
+
+  // ── Risk badge ──
+  const risk   = profile.risk_category ?? null;
+  const badge  = document.getElementById('riskBadge');
+  if (badge) {
+    badge.textContent  = risk ?? 'No data';
+    badge.className    = `risk-badge risk-${(risk ?? 'unknown').toLowerCase()}`;
+  }
+
+  // ── Severity bars — show today's row (last in array or latest date) ──
+  const sevBars  = document.getElementById('sevBars');
+  const sevDate  = document.getElementById('sevDate');
+  if (!sevBars) return;
+
+  const today = daily.length ? daily[daily.length - 1] : null;
+  if (sevDate && today) sevDate.textContent = `— ${today.score_date}`;
+
+  if (!today) {
+    sevBars.innerHTML = '<span class="no-score-data">No scoring data in PostgreSQL yet for this device.</span>';
+    return;
+  }
+
+  const sevGroups = [
+    {
+      label: '🔴 Harsh Braking', color: '#ef4444',
+      rows: [
+        { lbl: 'Critical', val: today.hb_critical, cls: 'sev-critical' },
+        { lbl: 'High',     val: today.hb_high,     cls: 'sev-high'     },
+        { lbl: 'Medium',   val: today.hb_medium,   cls: 'sev-medium'   },
+        { lbl: 'Low',      val: today.hb_low,      cls: 'sev-low'      },
+      ]
+    },
+    {
+      label: '🟠 Harsh Acceleration', color: '#f97316',
+      rows: [
+        { lbl: 'High',   val: today.ha_high,   cls: 'sev-high'   },
+        { lbl: 'Medium', val: today.ha_medium, cls: 'sev-medium' },
+        { lbl: 'Low',    val: today.ha_low,    cls: 'sev-low'    },
+      ]
+    },
+    {
+      label: '🟡 Harsh Cornering', color: '#ca8a04',
+      rows: [
+        { lbl: 'High',   val: today.rt_high,   cls: 'sev-high'   },
+        { lbl: 'Medium', val: today.rt_medium, cls: 'sev-medium' },
+        { lbl: 'Low',    val: today.rt_low,    cls: 'sev-low'    },
+      ]
+    },
+  ];
+
+  const maxVal = Math.max(1, ...sevGroups.flatMap(g => g.rows.map(r => r.val || 0)));
+
+  sevBars.innerHTML = sevGroups.map(g => `
+    <div class="sev-group">
+      <div class="sev-group-label">${g.label}</div>
+      ${g.rows.map(r => {
+        const pct = ((r.val || 0) / maxVal * 100).toFixed(1);
+        return `<div class="sev-bar-row">
+          <span class="sev-tier ${r.cls}">${r.lbl}</span>
+          <div class="sev-bar-track">
+            <div class="sev-bar-fill ${r.cls}" style="width:${pct}%"></div>
+          </div>
+          <span class="sev-count">${r.val ?? 0}</span>
+        </div>`;
+      }).join('')}
+    </div>
+  `).join('');
 }
 
 function buildDateStrip(daily) {
