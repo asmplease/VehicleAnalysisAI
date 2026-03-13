@@ -70,6 +70,15 @@ function showLoading(el) {
   el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading from Athena…</div>';
 }
 
+function ldHide(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.add('hidden');
+}
+function ldShow(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.remove('hidden');
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -141,6 +150,13 @@ async function loadFleetSummary() {
 
   // Driver safety split donut
   buildDriverSplitChart(data.safe_drivers || 0, data.risky_drivers || 0);
+
+  // Remove shimmer from KPI rows now that data is loaded
+  document.getElementById('kpiRow')?.classList.remove('kpi-shimmer');
+  document.getElementById('kpiRowGood')?.classList.remove('kpi-shimmer');
+  // Hide donut chart loaders
+  ldHide('ld-chartAlertSplit');
+  ldHide('ld-chartDriverSplit');
 }
 
 function buildDriverSplitChart(safe, risky) {
@@ -209,6 +225,7 @@ async function loadDailyTrend() {
       },
     },
   });
+  ldHide('ld-chartDailyTrend');
 }
 
 function buildAlertSplitChart(hb, ha, rt) {
@@ -255,6 +272,7 @@ async function loadHourlyDistribution() {
       },
     },
   });
+  ldHide('ld-chartHourly');
 }
 
 async function loadHotspotTable(alType) {
@@ -301,6 +319,7 @@ async function loadSpeedDist(alType) {
       },
     },
   });
+  ldHide('ld-chartSpeed');
 }
 
 async function loadTopDevices() {
@@ -331,6 +350,12 @@ document.getElementById('hotspotAlertType').addEventListener('change', e => {
 });
 
 async function loadOverview() {
+  ldShow('pageLoader');
+  // Re-show shimmer and chart loaders on every refresh
+  document.getElementById('kpiRow')?.classList.add('kpi-shimmer');
+  document.getElementById('kpiRowGood')?.classList.add('kpi-shimmer');
+  ['ld-chartDailyTrend','ld-chartAlertSplit','ld-chartHourly','ld-chartSpeed','ld-chartDriverSplit']
+    .forEach(id => ldShow(id));
   await Promise.allSettled([
     loadFleetSummary(),
     loadDailyTrend(),
@@ -340,6 +365,7 @@ async function loadOverview() {
     loadTopDevices(),
     loadSafeDriving(),
   ]);
+  ldHide('pageLoader');
   document.getElementById('refreshTs').textContent =
     'Updated ' + new Date().toLocaleTimeString();
 }
@@ -451,6 +477,8 @@ async function drillDevice(deviceId) {
   document.getElementById('deviceDrilldown').classList.remove('hidden');
   document.getElementById('deviceTitle').textContent = `Device: ${deviceId}`;
   document.getElementById('deviceMeta').textContent = 'Loading…';
+  document.getElementById('deviceKpiRow')?.classList.add('kpi-shimmer');
+  ldShow('pageLoader');
 
   initDeviceMap();
 
@@ -482,9 +510,12 @@ async function drillDevice(deviceId) {
   }
   document.getElementById('deviceMeta').textContent =
     `Last seen: ${summary.last_seen ?? '—'} · Avg speed: ${summary.avg_speed ?? '—'} km/h`;
+  document.getElementById('deviceKpiRow')?.classList.remove('kpi-shimmer');
+  ldHide('pageLoader');
 
   // Daily alerts chart + date strip
   buildDeviceDailyChart(daily);
+  ldHide('ld-chartDeviceDaily');
   buildDateStrip(daily);
 
   // Safe driver badge
@@ -502,13 +533,12 @@ async function drillDevice(deviceId) {
   // Timeline table
   buildTimelineTable(timeline);
 
-  // Driver score panel — loaded async AFTER main UI renders (PG may be slow)
-  buildDriverScorePanel({profile:{}, daily:[]});  // show empty state immediately
+  // Driver score panel — show loading spinner immediately; replace when PG resolves (~11s)
+  buildDriverScorePanel(null);
   api(`/api/devices/${deviceId}/driver-score`, {profile:{}, daily:[]})
     .then(scoreData => buildDriverScorePanel(scoreData));
 
-  // Map — alert markers + GPS route polyline
-  if (loadingEl) loadingEl.style.display = 'none';
+  // Map — alert markers + GPS route polyline (_loadRouteLayer manages the overlay)
   await buildDeviceMap(deviceId, days);
 
   // Scroll to drilldown
@@ -518,6 +548,22 @@ async function drillDevice(deviceId) {
 // ── Driver Score Panel (PostgreSQL) ──────────────────────────────────────────
 
 function buildDriverScorePanel(data) {
+  // data === null means PG is still fetching — show a spinner
+  if (data === null) {
+    const sevBars = document.getElementById('sevBars');
+    if (sevBars) sevBars.innerHTML = '<div class="score-pg-loader"><div class="spinner"></div> Loading from PostgreSQL…</div>';
+    const sevDate = document.getElementById('sevDate');
+    if (sevDate) sevDate.textContent = '';
+    // Grey out the ring and stats while loading
+    ['scoreBigNum','scoreToday','score7d','score30d','scoreDeductions'].forEach(id => {
+      const e = document.getElementById(id); if (e) e.textContent = '—';
+    });
+    const arc = document.getElementById('scoreRingArc');
+    if (arc) { arc.style.strokeDasharray = '0 302'; arc.style.stroke = '#cbd5e1'; }
+    const badge = document.getElementById('riskBadge');
+    if (badge) { badge.textContent = '…'; badge.className = 'risk-badge risk-unknown'; }
+    return;
+  }
   const profile = data?.profile ?? {};
   const daily   = data?.daily   ?? [];
 
@@ -764,6 +810,9 @@ function _rebuildAlertLayer() {
 }
 
 async function _loadRouteLayer(deviceId, day) {
+  const mapOv = document.getElementById('deviceMapLoading');
+  if (mapOv) mapOv.style.display = 'flex';
+
   if (_routeLayer) { deviceMap.removeLayer(_routeLayer); _routeLayer = null; }
 
   // Fetch alerts for this specific day from server (avoids LIMIT sampling issues)
@@ -794,13 +843,16 @@ async function _loadRouteLayer(deviceId, day) {
   if (allPts.length > 0)
     deviceMap.fitBounds(L.latLngBounds(allPts), { padding: [30, 30] });
   setTimeout(() => deviceMap.invalidateSize(), 150);
+  if (mapOv) mapOv.style.display = 'none';
 }
 
 async function switchRouteDay(day) {
   document.querySelectorAll('.route-day-btn').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.day) === day)
   );
+  ldShow('pageLoader');
   await _loadRouteLayer(_currentDeviceId, day);
+  ldHide('pageLoader');
 }
 
 // ── Device search ─────────────────────────────────────────────────────────────

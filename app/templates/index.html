@@ -11,6 +11,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
 </head>
 <body>
+<div id="pageLoader" class="page-loader-bar hidden"></div>
 
 <!-- ── Header ─────────────────────────────────────────────────────────────── -->
 <header class="topbar">
@@ -38,7 +39,7 @@
 <div id="tab-overview" class="tab-content active">
 
   <!-- KPI row: Bad driving -->
-  <div class="kpi-row" id="kpiRow">
+  <div class="kpi-row kpi-shimmer" id="kpiRow">
     <div class="kpi-card" id="kpi-total_alerts"><div class="kpi-val">—</div><div class="kpi-label">Total Alerts</div></div>
     <div class="kpi-card hb" id="kpi-harsh_braking"><div class="kpi-val">—</div><div class="kpi-label">Harsh Braking</div></div>
     <div class="kpi-card ha" id="kpi-harsh_acceleration"><div class="kpi-val">—</div><div class="kpi-label">Harsh Acceleration</div></div>
@@ -48,7 +49,7 @@
   </div>
 
   <!-- KPI row: Good driving -->
-  <div class="kpi-row" id="kpiRowGood">
+  <div class="kpi-row kpi-shimmer" id="kpiRowGood">
     <div class="kpi-card good" id="kpi-safe_drivers"><div class="kpi-val">—</div><div class="kpi-label">Safe Drivers (0 alerts)</div></div>
     <div class="kpi-card good" id="kpi-risky_drivers"><div class="kpi-val">—</div><div class="kpi-label">Risky Drivers</div></div>
     <div class="kpi-card good" id="kpi-total_devices"><div class="kpi-val">—</div><div class="kpi-label">Total Active Devices</div></div>
@@ -64,10 +65,12 @@
         <h3>Daily Alert Trend</h3>
         <span class="sub">Stacked by type — March 2026</span>
       </div>
+      <div class="card-loader" id="ld-chartDailyTrend"><div class="spinner"></div> Loading from Athena…</div>
       <canvas id="chartDailyTrend"></canvas>
     </div>
     <div class="chart-card">
       <div class="card-header"><h3>Alert Type Split</h3></div>
+      <div class="card-loader" id="ld-chartAlertSplit"><div class="spinner"></div> Loading…</div>
       <canvas id="chartAlertSplit"></canvas>
     </div>
   </div>
@@ -79,6 +82,7 @@
         <h3>Alerts by Hour of Day</h3>
         <span class="sub">When do incidents peak?</span>
       </div>
+      <div class="card-loader" id="ld-chartHourly"><div class="spinner"></div> Loading from Athena…</div>
       <canvas id="chartHourly"></canvas>
     </div>
     <div class="chart-card">
@@ -93,7 +97,7 @@
       <div class="table-scroll" style="max-height:240px">
         <table id="tblHotspotLocations">
           <thead><tr><th>#</th><th>Latitude</th><th>Longitude</th><th>Events</th><th>Devices</th><th>Avg Speed</th></tr></thead>
-          <tbody></tbody>
+          <tbody><tr class="tbl-loader"><td colspan="6"><div class="spinner"></div> Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -110,6 +114,7 @@
           <option value="harsh_cornering">Harsh Cornering</option>
         </select>
       </div>
+      <div class="card-loader" id="ld-chartSpeed"><div class="spinner"></div> Loading…</div>
       <canvas id="chartSpeed"></canvas>
     </div>
     <div class="chart-card wide">
@@ -126,7 +131,7 @@
               <th>Total</th><th>Action</th>
             </tr>
           </thead>
-          <tbody></tbody>
+          <tbody><tr class="tbl-loader"><td colspan="7"><div class="spinner"></div> Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -137,6 +142,7 @@
   <div class="chart-row">
     <div class="chart-card">
       <div class="card-header"><h3>Driver Safety Split</h3><span class="sub">Safe vs Risky — March 2026</span></div>
+      <div class="card-loader" id="ld-chartDriverSplit"><div class="spinner"></div> Loading…</div>
       <canvas id="chartDriverSplit"></canvas>
     </div>
     <div class="chart-card wide">
@@ -152,7 +158,7 @@
               <th>GPS Points</th><th>Active Days</th><th>Avg Pts/Day</th><th>Action</th>
             </tr>
           </thead>
-          <tbody></tbody>
+          <tbody><tr class="tbl-loader"><td colspan="6"><div class="spinner"></div> Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -209,7 +215,7 @@
       <div class="device-title" id="deviceTitle">Device —</div>
       <div class="device-meta" id="deviceMeta"></div>
     </div>
-    <div class="kpi-row" id="deviceKpiRow">
+    <div class="kpi-row kpi-shimmer" id="deviceKpiRow">
       <div class="kpi-card hb" id="dkpi-harsh_braking"><div class="kpi-val">—</div><div class="kpi-label">Harsh Braking</div></div>
       <div class="kpi-card ha" id="dkpi-harsh_acceleration"><div class="kpi-val">—</div><div class="kpi-label">Harsh Acceleration</div></div>
       <div class="kpi-card rt" id="dkpi-harsh_cornering"><div class="kpi-val">—</div><div class="kpi-label">Harsh Cornering</div></div>
@@ -217,6 +223,34 @@
       <div class="kpi-card" id="dkpi-avg_speed"><div class="kpi-val">—</div><div class="kpi-label">Avg Speed km/h</div></div>
       <div class="kpi-card" id="dkpi-max_speed"><div class="kpi-val">—</div><div class="kpi-label">Max Speed km/h</div></div>
       <div class="kpi-card good" id="dkpi-safe_badge"><div class="kpi-val" id="safeBadge">—</div><div class="kpi-label">Driver Status</div></div>
+    </div>
+
+    <!-- Driver Score Panel — data from PostgreSQL scoring pipeline -->
+    <div id="scorePanel" class="score-panel">
+      <div class="score-main-card">
+        <div class="score-circle-wrap">
+          <svg class="score-ring" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+            <circle class="ring-track" cx="60" cy="60" r="48"/>
+            <circle id="scoreRingArc" class="ring-arc" cx="60" cy="60" r="48"
+                    stroke-dasharray="0 302" stroke-dashoffset="75.5"/>
+          </svg>
+          <div class="score-circle-inner">
+            <div id="scoreBigNum" class="score-big">—</div>
+            <div class="score-label">/ 100</div>
+          </div>
+        </div>
+        <div class="score-stats-col">
+          <div id="riskBadge" class="risk-badge risk-unknown">—</div>
+          <div class="score-row"><span class="score-stat-label">Today</span><span id="scoreToday" class="score-stat-val">—</span></div>
+          <div class="score-row"><span class="score-stat-label">7-Day Avg</span><span id="score7d" class="score-stat-val">—</span></div>
+          <div class="score-row"><span class="score-stat-label">30-Day Avg</span><span id="score30d" class="score-stat-val">—</span></div>
+          <div class="score-row"><span class="score-stat-label">Pts Deducted Today</span><span id="scoreDeductions" class="score-stat-val deductions">—</span></div>
+        </div>
+      </div>
+      <div class="severity-panel">
+        <div class="sev-heading">Severity Breakdown <span class="sev-date" id="sevDate"></span></div>
+        <div id="sevBars" class="sev-bars"></div>
+      </div>
     </div>
 
     <!-- March date strip: one cell per day, coloured by alert volume -->
@@ -235,6 +269,7 @@
     <div class="chart-row">
       <div class="chart-card">
         <div class="card-header"><h3>Daily Alerts</h3></div>
+        <div class="card-loader" id="ld-chartDeviceDaily"><div class="spinner"></div> Loading…</div>
         <canvas id="chartDeviceDaily"></canvas>
       </div>
       <div class="chart-card wide">
@@ -265,7 +300,7 @@
               <th>Speed km/h</th><th>Latitude</th><th>Longitude</th>
             </tr>
           </thead>
-          <tbody></tbody>
+          <tbody><tr class="tbl-loader"><td colspan="6"><div class="spinner"></div> Loading…</td></tr></tbody>
         </table>
       </div>
     </div>
