@@ -79,6 +79,26 @@ function ldShow(id) {
   if (el) el.classList.remove('hidden');
 }
 
+/**
+ * Set an alert-type KPI card value and toggle the green zero-state when count === 0.
+ * @param {string} cardId  - id of the kpi-card element (e.g. 'kpi-harsh_braking')
+ * @param {number} value   - numeric value
+ */
+function setAlertKpi(cardId, value) {
+  const card = document.getElementById(cardId);
+  if (!card) return;
+  const valEl = card.querySelector('.kpi-val');
+  if (valEl) valEl.textContent = fmt(value);
+  card.classList.toggle('kpi-zero', value === 0);
+}
+
+/** Green-styled cell for zero values in alert tables */
+function fmtCell(n) {
+  if (n == null) return '<span style="color:var(--muted)">—</span>';
+  if (n === 0)   return '<span class="cell-zero">✓ 0</span>';
+  return fmt(n);
+}
+
 // ── Tab switching ─────────────────────────────────────────────────────────────
 document.querySelectorAll('.tab').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -118,9 +138,6 @@ async function loadFleetSummary() {
   // Bad driving KPIs
   const badFields = {
     total_alerts:        'total_alerts',
-    harsh_braking:       'harsh_braking',
-    harsh_acceleration:  'harsh_acceleration',
-    harsh_cornering:     'harsh_cornering',
     avg_speed_at_alert:  'avg_speed_at_alert',
     total_gps_points:    'total_gps_points',
   };
@@ -128,6 +145,10 @@ async function loadFleetSummary() {
     const el = document.querySelector(`#kpi-${key} .kpi-val`);
     if (el) el.textContent = fmt(data[apiKey]);
   }
+  // Alert-type KPIs get zero-state treatment
+  setAlertKpi('kpi-harsh_braking',      data.harsh_braking      ?? 0);
+  setAlertKpi('kpi-harsh_acceleration', data.harsh_acceleration ?? 0);
+  setAlertKpi('kpi-harsh_cornering',    data.harsh_cornering    ?? 0);
 
   // Good driving KPIs
   const el_safe    = document.querySelector('#kpi-safe_drivers .kpi-val');
@@ -330,9 +351,9 @@ async function loadTopDevices() {
     <tr>
       <td>${i + 1}</td>
       <td style="font-family:monospace;font-size:12px">${r.deviceid || '—'}</td>
-      <td class="hb-col">${fmt(r.harsh_braking)}</td>
-      <td class="ha-col">${fmt(r.harsh_acceleration)}</td>
-      <td class="rt-col">${fmt(r.harsh_cornering)}</td>
+      <td class="hb-col">${fmtCell(r.harsh_braking)}</td>
+      <td class="ha-col">${fmtCell(r.harsh_acceleration)}</td>
+      <td class="rt-col">${fmtCell(r.harsh_cornering)}</td>
       <td><strong>${fmt(r.total_alerts)}</strong></td>
       <td><button class="link-btn" onclick="drillDevice('${r.deviceid}')">Drill ↗</button></td>
     </tr>
@@ -496,18 +517,15 @@ async function drillDevice(deviceId) {
   _currentAlertRows = [];  // cleared; _loadRouteLayer fetches per day
 
   // KPIs
-  const dkpis = {
-    harsh_braking:       'harsh_braking',
-    harsh_acceleration:  'harsh_acceleration',
-    harsh_cornering:     'harsh_cornering',
-    total_alerts:        'total_alerts',
-    avg_speed:           'avg_speed',
-    max_speed:           'max_speed',
-  };
-  for (const [key, apiKey] of Object.entries(dkpis)) {
+  const plainKpis = { total_alerts:'total_alerts', avg_speed:'avg_speed', max_speed:'max_speed' };
+  for (const [key, apiKey] of Object.entries(plainKpis)) {
     const el = document.querySelector(`#dkpi-${key} .kpi-val`);
     if (el) el.textContent = fmt(summary[apiKey]);
   }
+  // Alert-type KPIs get zero-state treatment
+  setAlertKpi('dkpi-harsh_braking',      summary.harsh_braking      ?? 0);
+  setAlertKpi('dkpi-harsh_acceleration', summary.harsh_acceleration ?? 0);
+  setAlertKpi('dkpi-harsh_cornering',    summary.harsh_cornering    ?? 0);
   document.getElementById('deviceMeta').textContent =
     `Last seen: ${summary.last_seen ?? '—'} · Avg speed: ${summary.avg_speed ?? '—'} km/h`;
   document.getElementById('deviceKpiRow')?.classList.remove('kpi-shimmer');
