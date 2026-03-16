@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import STATIC_DIR, TEMPLATES_DIR
 import app.athena_service as athena
+import app.pg_service as pg
 
 log = logging.getLogger(__name__)
 
@@ -52,9 +53,9 @@ def favicon() -> Response:
 @app.on_event("startup")
 async def _prewarm():
     """Kick off cache pre-warm in background so first real request is instant."""
+    import threading
     log.info("Server starting — launching cache pre-warm thread")
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, athena.prewarm_fleet_caches)
+    threading.Thread(target=athena.prewarm_fleet_caches, daemon=True).start()
 
 
 # ── Cache management ─────────────────────────────────────────────────────
@@ -68,10 +69,33 @@ def cache_status():
 @app.post("/api/cache/clear")
 def cache_clear_endpoint():
     """Evict all cached Athena results — next request re-fetches from Athena."""
+    import threading
     athena.cache_clear()
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, athena.prewarm_fleet_caches)  # re-warm immediately
+    threading.Thread(target=athena.prewarm_fleet_caches, daemon=True).start()
     return {"cleared": True, "message": "Cache cleared and pre-warm re-triggered"}
+
+
+@app.post("/api/cache/repair")
+def cache_repair_endpoint():
+    """Trigger stale Glue partition cleanup in the background (on-demand only)."""
+    import threading
+    threading.Thread(target=athena.repair_alert_table_partitions, daemon=True).start()
+    return {"started": True, "message": "Partition repair running in background — check server logs"}
+
+
+@app.get("/api/debug/alerttypes")
+def debug_alerttypes():
+    """Diagnostic: show distinct alerttype values in the raw table (March 2026).
+    Use this to verify actual alertType naming in the S3/Athena raw data."""
+    try:
+        df = athena.query_df(
+            f"SELECT alerttype, COUNT(*) AS n FROM raw"
+            f" WHERE {athena._MARCH} AND alerttype IS NOT NULL"
+            f" GROUP BY alerttype ORDER BY n DESC LIMIT 30"
+        )
+        return df.to_dict(orient="records")
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 # ── Fleet analytics ────────────────────────────────────────────────────────────
@@ -169,3 +193,19 @@ def device_route(device_id: str, day: int = None):
 def device_gps_days(device_id: str):
     """Days in March with GPS track data — for the route date picker."""
     return _safe_list(athena.get_device_gps_days, device_id)
+
+
+@app.get("/api/devices/{device_id}/driver-score")
+def driver_score(device_id: str):
+    """Driver score profile + per-day severity breakdown from PostgreSQL."""
+    profile = pg.get_driver_profile(device_id)
+    daily   = pg.get_driver_daily_scores(device_id)
+    return {"profile": profile, "daily": daily}
+
+
+# ── Fleet PostgreSQL analytics ─────────────────────────────────────────────────
+
+@app.get("/api/fleet/risk-distribution")
+def fleet_risk_distribution():
+    """Count of devices per risk category (Low/Medium/High/Critical) from PostgreSQL."""
+    return pg.get_fleet_risk_distribution()

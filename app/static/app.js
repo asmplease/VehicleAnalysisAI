@@ -755,24 +755,61 @@ async function buildDeviceMap(deviceId, days) {
   if (deviceMapLayer) { deviceMap.removeLayer(deviceMapLayer); deviceMapLayer = null; }
   if (_routeLayer)    { deviceMap.removeLayer(_routeLayer);    _routeLayer    = null; }
 
-  // ── Route day picker ──
+  // ── Route day calendar ──
   const picker = document.getElementById('routeDayPicker');
   if (picker) {
     if (days && days.length > 0) {
-      const TODAY = 12; // March 12 2026
+      const TODAY = 13; // March 13 2026
+      const dayMap = {};
+      days.forEach(d => { dayMap[d.day] = d.gps_points; });
       const sorted = [...days].sort((a, b) => a.day - b.day);
       const defaultDay = (sorted.find(d => d.day === TODAY) || sorted[sorted.length - 1]).day;
-      picker.innerHTML =
-        sorted.map(d =>
-          `<button class="route-day-btn${d.day === defaultDay ? ' active' : ''}"
-                   onclick="switchRouteDay(${d.day})" data-day="${d.day}">
-             Mar&nbsp;${d.day}
-           </button>`
-        ).join('') +
-        `<span class="picker-sep"></span>
-         <button id="alertsToggleBtn" class="alerts-toggle-btn on" onclick="toggleAlerts()">
-           ● Alerts
-         </button>`;
+
+      // March 2026: day 1 = Sunday (DOW 0)
+      const MARCH_START_DOW = 0; // 2026-03-01 is Sunday
+      const MARCH_DAYS = 31;
+
+      // Build calendar rows
+      let rows = '';
+      let col = MARCH_START_DOW;
+      let row = '<tr>';
+      // Leading empty cells
+      for (let c = 0; c < MARCH_START_DOW; c++) row += '<td></td>';
+
+      for (let d = 1; d <= MARCH_DAYS; d++) {
+        const pts   = dayMap[d];
+        const hasData = pts !== undefined;
+        const active  = d === defaultDay;
+        const ptsLabel = hasData
+          ? (pts >= 1000 ? `${(pts / 1000).toFixed(1)}k` : String(pts))
+          : '';
+        const title = hasData ? ` title="${pts.toLocaleString()} GPS pts"` : '';
+        const click = hasData ? ` onclick="switchRouteDay(${d})"` : '';
+        const cls = 'rdp-day' + (hasData ? ' has-data' : '') + (active ? ' active' : '');
+        row += `<td><div class="${cls}" data-day="${d}"${click}${title}>
+          ${d}${hasData ? `<span class="rdp-dot"></span><span class="rdp-pts">${ptsLabel}</span>` : ''}
+        </div></td>`;
+        col++;
+        if (col === 7) {
+          rows += row + '</tr>';
+          row = '<tr>'; col = 0;
+        }
+      }
+      // Trailing empty cells
+      while (col > 0 && col < 7) { row += '<td></td>'; col++; }
+      if (col === 7 || row !== '<tr>') rows += row + '</tr>';
+
+      picker.innerHTML = `
+        <div class="rdp-header">
+          <span class="rdp-month-label">March 2026</span>
+          <button id="alertsToggleBtn" class="alerts-toggle-btn on" onclick="toggleAlerts()">●&nbsp;Alerts</button>
+        </div>
+        <table class="rdp-calendar">
+          <thead><tr>
+            <th>Su</th><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
       await _loadRouteLayer(deviceId, defaultDay);
     } else {
       picker.innerHTML = '<span class="no-days">No GPS track data in March</span>';
@@ -865,7 +902,7 @@ async function _loadRouteLayer(deviceId, day) {
 }
 
 async function switchRouteDay(day) {
-  document.querySelectorAll('.route-day-btn').forEach(b =>
+  document.querySelectorAll('.rdp-day').forEach(b =>
     b.classList.toggle('active', parseInt(b.dataset.day) === day)
   );
   ldShow('pageLoader');

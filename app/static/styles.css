@@ -129,6 +129,24 @@ html, body {
 .kpi-card.ha { border-left-color: var(--ha); }
 .kpi-card.rt { border-left-color: var(--rt); }
 .kpi-card.good { border-left-color: var(--green); }
+
+/* Zero-alert state — override border to green, show "✓ None" badge */
+.kpi-card.kpi-zero.hb,
+.kpi-card.kpi-zero.ha,
+.kpi-card.kpi-zero.rt { border-left-color: var(--green); background: #f0fdf4; }
+.kpi-card.kpi-zero .kpi-val { color: var(--green); }
+.kpi-zero-badge {
+  display: none;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--green);
+  letter-spacing: .3px;
+  margin-top: 3px;
+}
+.kpi-card.kpi-zero .kpi-zero-badge { display: block; }
+
+/* Table zero-value cell */
+.cell-zero { color: var(--green) !important; font-weight: 600; }
 .kpi-val { font-size: 28px; font-weight: 700; margin-bottom: 2px; }
 .kpi-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
 
@@ -188,21 +206,49 @@ html, body {
 .ds-legend-dot.bad    { background: #dc2626; }
 .ds-legend-dot.nodata { background: #e2e8f0; border: 1px solid #cbd5e1; }
 
-/* ── Route day picker ───────────────────────────────────────── */
-.route-day-picker {
-  display: flex; flex-wrap: wrap; gap: 5px; width: 100%;
-  min-height: 24px;
+/* ── Route day calendar ─────────────────────────────────────── */
+.route-day-picker { width: 100%; }
+.rdp-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 6px;
 }
-.route-day-btn {
-  padding: 3px 11px; border-radius: 12px;
-  font-size: 11px; font-weight: 600; cursor: pointer;
-  border: 1.5px solid var(--border);
-  background: var(--surface2); color: var(--muted);
-  transition: all .15s;
-  white-space: nowrap;
+.rdp-month-label { font-size: 12px; font-weight: 700; color: var(--text); }
+.rdp-calendar {
+  width: 100%; border-collapse: collapse; table-layout: fixed;
 }
-.route-day-btn:hover { border-color: var(--accent); color: var(--accent); }
-.route-day-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.rdp-calendar thead th {
+  font-size: 10px; font-weight: 600; color: var(--muted);
+  text-align: center; padding-bottom: 3px;
+}
+.rdp-calendar td { text-align: center; padding: 2px 0; }
+.rdp-day {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; width: 32px; height: 34px;
+  margin: 0 auto; border-radius: 8px;
+  font-size: 11px; font-weight: 600;
+  border: 1.5px solid transparent;
+  transition: all .15s; position: relative; cursor: default;
+  color: var(--muted); opacity: 0.3;
+}
+.rdp-day.has-data {
+  opacity: 1; cursor: pointer;
+  color: var(--text);
+  background: var(--surface2); border-color: var(--border);
+}
+.rdp-day.has-data:hover { border-color: var(--accent); color: var(--accent); background: var(--surface); }
+.rdp-day.has-data.active {
+  background: var(--accent); color: #fff;
+  border-color: var(--accent); box-shadow: 0 2px 6px rgba(99,102,241,.35);
+}
+.rdp-dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); margin-top: 2px; flex-shrink: 0;
+}
+.rdp-day.active .rdp-dot { background: rgba(255,255,255,0.8); }
+.rdp-pts {
+  font-size: 8px; line-height: 1; color: inherit;
+  opacity: 0.65; margin-top: 1px; white-space: nowrap;
+}
 .no-days { font-size: 11px; color: var(--muted); }
 .picker-sep {
   display: inline-block; width: 1px; background: var(--border);
