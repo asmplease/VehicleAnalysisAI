@@ -477,8 +477,29 @@ def device_daily_alerts(device_id: str):
 
 @app.get("/api/devices/{device_id}/map")
 def device_map(device_id: str, day: int = None):
-    """GPS positions for this device, optionally filtered to a single day."""
-    positions = svc.get_device_positions(device_id, limit=500)
+    """GPS positions for this device, filtered to a single day of March 2026."""
+    with pg._conn() as conn:
+        with conn.cursor() as cur:
+            if day:
+                cur.execute("""
+                    SELECT latitude, longitude, gps_time, device_speed
+                    FROM device_latest_position
+                    WHERE device_id = %s
+                      AND date = make_date(2026, 3, %s)
+                      AND latitude IS NOT NULL AND longitude IS NOT NULL
+                    ORDER BY gps_time ASC
+                    LIMIT 500
+                """, (device_id, day))
+            else:
+                cur.execute("""
+                    SELECT latitude, longitude, gps_time, device_speed
+                    FROM device_latest_position
+                    WHERE device_id = %s
+                      AND latitude IS NOT NULL AND longitude IS NOT NULL
+                    ORDER BY gps_time DESC
+                    LIMIT 500
+                """, (device_id,))
+            positions = [dict(r) for r in cur.fetchall()]
     result = []
     for r in positions:
         lat = r.get("latitude")
@@ -497,7 +518,28 @@ def device_map(device_id: str, day: int = None):
 @app.get("/api/devices/{device_id}/route")
 def device_route(device_id: str, day: int = None):
     """Ordered GPS track for a device — for polyline on map."""
-    positions = svc.get_device_positions(device_id, limit=500)
+    with pg._conn() as conn:
+        with conn.cursor() as cur:
+            if day:
+                cur.execute("""
+                    SELECT latitude, longitude, gps_time, device_speed
+                    FROM device_latest_position
+                    WHERE device_id = %s
+                      AND date = make_date(2026, 3, %s)
+                      AND latitude IS NOT NULL AND longitude IS NOT NULL
+                    ORDER BY gps_time ASC
+                    LIMIT 500
+                """, (device_id, day))
+            else:
+                cur.execute("""
+                    SELECT latitude, longitude, gps_time, device_speed
+                    FROM device_latest_position
+                    WHERE device_id = %s
+                      AND latitude IS NOT NULL AND longitude IS NOT NULL
+                    ORDER BY gps_time DESC
+                    LIMIT 500
+                """, (device_id,))
+            positions = [dict(r) for r in cur.fetchall()]
     if not positions:
         return []
 
@@ -524,14 +566,12 @@ def device_route(device_id: str, day: int = None):
             "speed":     float(r.get("device_speed") or 0),
         })
         prev = (lat, lon)
-    # Reverse to chronological order (positions come desc)
-    out.reverse()
     return out
 
 
 @app.get("/api/devices/{device_id}/days")
 def device_gps_days(device_id: str):
-    """Days that have GPS data for this device — for date picker."""
+    """Days in March 2026 that have GPS data for this device — for the route date picker."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -540,6 +580,7 @@ def device_gps_days(device_id: str):
                     COUNT(*) AS gps_points
                 FROM device_latest_position
                 WHERE device_id = %s
+                  AND date >= '2026-03-01' AND date <= '2026-03-31'
                   AND latitude IS NOT NULL AND longitude IS NOT NULL
                 GROUP BY date
                 ORDER BY date
