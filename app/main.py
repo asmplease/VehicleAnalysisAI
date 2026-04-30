@@ -476,20 +476,20 @@ def device_daily_alerts(device_id: str):
 
 
 @app.get("/api/devices/{device_id}/map")
-def device_map(device_id: str, day: str = None):
-    """GPS positions for this device, filtered to a single day of March 2026."""
+def device_map(device_id: str, date: str = None):
+    """GPS positions for this device, optionally filtered to a specific YYYY-MM-DD date."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
-            if day:
+            if date:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
                     FROM device_latest_position
                     WHERE device_id = %s
-                      AND date = %s::date
+                      AND date = %s
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time ASC
                     LIMIT 500
-                """, (device_id, day))
+                """, (device_id, date))
             else:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
@@ -516,20 +516,20 @@ def device_map(device_id: str, day: str = None):
 
 
 @app.get("/api/devices/{device_id}/route")
-def device_route(device_id: str, day: str = None):
+def device_route(device_id: str, day: int = None):
     """Ordered GPS track for a device — for polyline on map."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
-            if day:
+            if date:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
                     FROM device_latest_position
                     WHERE device_id = %s
-                      AND date = %s::date
+                      AND date = %s
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time ASC
                     LIMIT 500
-                """, (device_id, day))
+                """, (device_id, date))
             else:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
@@ -576,13 +576,14 @@ def device_gps_days(device_id: str):
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    date::text AS date,
+                    EXTRACT(DAY FROM date)::int AS day,
                     COUNT(*) AS gps_points
                 FROM device_latest_position
                 WHERE device_id = %s
+                  AND date >= CURRENT_DATE - 30
                   AND latitude IS NOT NULL AND longitude IS NOT NULL
                 GROUP BY date
-                ORDER BY date DESC
+                ORDER BY date
             """, (device_id,))
             return [dict(r) for r in cur.fetchall()]
 

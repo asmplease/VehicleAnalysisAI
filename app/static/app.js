@@ -680,33 +680,29 @@ function buildDriverScorePanel(data) {
   `).join('');
 }
 
+
 function buildDateStrip(daily) {
-  const el = document.getElementById('dateBand');
+  const el = document.getElementById('dateSelect');
   if (!el) return;
-  // Build map of day number → total alerts
-  const counts = {};
+  // Build drop-down of available dates. 'daily' will be an array of {date, harsh_braking, etc}
+  const opts = ['<option value="">-- Select optimal route date --</option>'];
   daily.forEach(r => {
     if (!r.date) return;
-    const day = parseInt(r.date.split('-')[2], 10);
-    counts[day] = (r.harsh_braking || 0) + (r.harsh_acceleration || 0) + (r.harsh_cornering || 0);
+    const dateStr = r.date.split('T')[0];
+    const n = (r.harsh_braking || 0) + (r.harsh_acceleration || 0) + (r.harsh_cornering || 0);
+    const prefix = n === 0 ? "✅" : (n <= 3 ? "⚠️" : "🔴");
+    opts.push(`<option value="${dateStr}">${prefix} ${dateStr} (${n} alerts)</option>`);
   });
-  const cells = [];
-  for (let d = 1; d <= 31; d++) {
-    const n = counts[d];
-    let cls, tip;
-    if (n == null) {
-      cls = 'nodata'; tip = `Mar ${d}: no data`;
-    } else if (n === 0) {
-      cls = 'good'; tip = `Mar ${d}: \u2705 Safe – 0 alerts`;
-    } else if (n <= 3) {
-      cls = 'mild'; tip = `Mar ${d}: \u26A0\uFE0F ${n} alert${n > 1 ? 's' : ''}`;
-    } else {
-      cls = 'bad'; tip = `Mar ${d}: \uD83D\uDD34 ${n} alerts`;
-    }
-    const clk = (cls !== 'nodata') ? ` onclick="switchRouteDay(${d})" title="View route for Mar ${d}"` : '';
-    cells.push(`<div class="ds-cell ${cls}" data-tip="${tip}"${clk}>${d}</div>`);
+  el.innerHTML = opts.join('');
+  
+  // Attach event listener to button
+  const btn = document.getElementById('btnSwitchDate');
+  if (btn) {
+    btn.onclick = () => {
+      const val = el.value;
+      if (val) switchRouteDay(val);
+    };
   }
-  el.innerHTML = cells.join('');
 }
 
 function buildDeviceDailyChart(rows) {
@@ -755,84 +751,35 @@ async function buildDeviceMap(deviceId, days) {
   if (deviceMapLayer) { deviceMap.removeLayer(deviceMapLayer); deviceMapLayer = null; }
   if (_routeLayer)    { deviceMap.removeLayer(_routeLayer);    _routeLayer    = null; }
 
-  // ── Route day calendar ──
   const picker = document.getElementById('routeDayPicker');
   if (picker) {
     if (days && days.length > 0) {
-      const TODAY = 13; // March 13 2026
-      const dayMap = {};
-      days.forEach(d => { dayMap[d.day] = d.gps_points; });
-      const sorted = [...days].sort((a, b) => a.day - b.day);
-      const defaultDay = (sorted.find(d => d.day === TODAY) || sorted[sorted.length - 1]).day;
-
-      // March 2026: day 1 = Sunday (DOW 0)
-      const MARCH_START_DOW = 0; // 2026-03-01 is Sunday
-      const MARCH_DAYS = 31;
-
-      // Build calendar rows
-      let rows = '';
-      let col = MARCH_START_DOW;
-      let row = '<tr>';
-      // Leading empty cells
-      for (let c = 0; c < MARCH_START_DOW; c++) row += '<td></td>';
-
-      for (let d = 1; d <= MARCH_DAYS; d++) {
-        const pts   = dayMap[d];
-        const hasData = pts !== undefined;
-        const active  = d === defaultDay;
-        const ptsLabel = hasData
-          ? (pts >= 1000 ? `${(pts / 1000).toFixed(1)}k` : String(pts))
-          : '';
-        const title = hasData ? ` title="${pts.toLocaleString()} GPS pts"` : '';
-        const click = hasData ? ` onclick="switchRouteDay(${d})"` : '';
-        const cls = 'rdp-day' + (hasData ? ' has-data' : '') + (active ? ' active' : '');
-        row += `<td><div class="${cls}" data-day="${d}"${click}${title}>
-          ${d}${hasData ? `<span class="rdp-dot"></span><span class="rdp-pts">${ptsLabel}</span>` : ''}
-        </div></td>`;
-        col++;
-        if (col === 7) {
-          rows += row + '</tr>';
-          row = '<tr>'; col = 0;
-        }
-      }
-      // Trailing empty cells
-      while (col > 0 && col < 7) { row += '<td></td>'; col++; }
-      if (col === 7 || row !== '<tr>') rows += row + '</tr>';
-
-      picker.innerHTML = `
-        <div class="rdp-header">
-          <span class="rdp-month-label">March 2026</span>
+      // Create a nice day chooser based on available dates
+      const defaultDate = days[0].date ? days[0].date.split('T')[0] : '';
+      
+      let html = `<div class="rdp-header">
+          <span class="rdp-month-label">Available GPS Dates</span>
           <button id="alertsToggleBtn" class="alerts-toggle-btn on" onclick="toggleAlerts()">●&nbsp;Alerts</button>
         </div>
-        <table class="rdp-calendar">
-          <thead><tr>
-            <th>Su</th><th>Mo</th><th>Tu</th><th>We</th><th>Th</th><th>Fr</th><th>Sa</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>`;
-      await _loadRouteLayer(deviceId, defaultDay);
+        <div style="padding: 10px;">
+        <select class="rdp-select" style="width: 100%; padding: 6px;" onchange="switchRouteDay(this.value)">`;
+        
+      days.forEach(d => {
+          const dStr = d.date ? d.date.split('T')[0] : '';
+          html += `<option value="${dStr}">${dStr} — ${d.gps_points} pts</option>`;
+      });
+      html += `</select></div>`;
+      
+      picker.innerHTML = html;
+      await _loadRouteLayer(deviceId, defaultDate);
     } else {
-      picker.innerHTML = '<span class="no-days">No GPS track data in March</span>';
+      picker.innerHTML = '<span class="no-days">No GPS track data available</span>';
       _rebuildAlertLayer();
       setTimeout(() => deviceMap.invalidateSize(), 150);
     }
   }
 }
 
-/** Toggle alert markers on/off. */
-function toggleAlerts() {
-  _alertsVisible = !_alertsVisible;
-  const btn = document.getElementById('alertsToggleBtn');
-  if (_alertsVisible) {
-    if (deviceMapLayer) deviceMap.addLayer(deviceMapLayer);
-    if (btn) { btn.classList.add('on'); btn.classList.remove('off'); }
-  } else {
-    if (deviceMapLayer) deviceMap.removeLayer(deviceMapLayer);
-    if (btn) { btn.classList.add('off'); btn.classList.remove('on'); }
-  }
-}
-
-/** Rebuild the alert-event marker layer from _currentAlertRows (already day-filtered). */
 function _rebuildAlertLayer() {
   if (deviceMapLayer) { deviceMap.removeLayer(deviceMapLayer); deviceMapLayer = null; }
   deviceMapLayer = L.layerGroup();
@@ -864,49 +811,70 @@ function _rebuildAlertLayer() {
   return pts;
 }
 
-async function _loadRouteLayer(deviceId, day) {
-  const mapOv = document.getElementById('deviceMapLoading');
+
+async function _loadRouteLayer(deviceId, dateStr) {
+  const mapOv = document.getElementById('mapOverlayRoute');
   if (mapOv) mapOv.style.display = 'flex';
-
-  if (_routeLayer) { deviceMap.removeLayer(_routeLayer); _routeLayer = null; }
-
-  // Fetch alerts for this specific day from server (avoids LIMIT sampling issues)
-  const dayAlerts = await api(`/api/devices/${deviceId}/map?day=${day}`, []);
+  
+  const query = dateStr ? `?date=${dateStr}` : '';
+  const dayAlerts = await api(`/api/devices/${deviceId}/map${query}`, []);
   _currentAlertRows = dayAlerts;
   const alertPts = _rebuildAlertLayer();
-
+  
+  if (_routeLayer) _routeLayer.remove();
   _routeLayer = L.layerGroup();
   const routePts = [];
-  const dayParam = day ? `?day=${day}` : '';
-  const route = await api(`/api/devices/${deviceId}/route${dayParam}`, []);
+  const route = await api(`/api/devices/${deviceId}/route${query}`, []);
+  
   if (route && route.length > 1) {
     const pts = route.map(r => [r.latitude, r.longitude]);
     routePts.push(...pts);
     L.polyline(pts, { color: C.accent, weight: 3, opacity: 0.85, smoothFactor: 2 })
-      .bindPopup(`<b>GPS Route — Mar ${day ?? '?'}</b><br>${route.length} pts<br>
-                  <small>${route[0].gpstime} → ${route[route.length-1].gpstime}</small>`)
+      .bindPopup(`<b>GPS Route — ${dateStr ?? 'All time'}</b><br>${route.length} pts<br>
+                  <small>${route[0].gps_time || route[0].gpstime} → ${route[route.length-1].gps_time || route[route.length-1].gpstime}</small>`)
       .addTo(_routeLayer);
+      
     L.circleMarker(pts[0], { radius: 7, color: '#fff', fillColor: C.green, fillOpacity: 1, weight: 2 })
-      .bindPopup(`<b>▶ Start</b><br>${route[0].gpstime}<br>${route[0].speed ?? '—'} km/h`)
+      .bindPopup(`<b>▶ Start</b><br>${route[0].gps_time || route[0].gpstime}`)
       .addTo(_routeLayer);
+      
     L.circleMarker(pts[pts.length-1], { radius: 7, color: '#fff', fillColor: '#334155', fillOpacity: 1, weight: 2 })
-      .bindPopup(`<b>■ End</b><br>${route[route.length-1].gpstime}<br>${route[route.length-1].speed ?? '—'} km/h`)
+      .bindPopup(`<b>■ End</b><br>${route[route.length-1].gps_time || route[route.length-1].gpstime}`)
       .addTo(_routeLayer);
   }
+  
   _routeLayer.addTo(deviceMap);
   const allPts = [...routePts, ...alertPts];
-  if (allPts.length > 0)
+  
+  if (allPts.length > 0) {
     deviceMap.fitBounds(L.latLngBounds(allPts), { padding: [30, 30] });
+  }
+  
   setTimeout(() => deviceMap.invalidateSize(), 150);
   if (mapOv) mapOv.style.display = 'none';
 }
 
 async function switchRouteDay(dateStr) {
-    const sel = document.getElementById('dateSelect');
-    if (sel && sel.value !== dateStr) sel.value = dateStr;
-    ldShow('pageLoader');
-    await _loadRouteLayer(_currentDeviceId, dateStr);
-    ldHide('pageLoader');
+  ldShow('pageLoader');
+  await _loadRouteLayer(_currentDeviceId, dateStr);
+  ldHide('pageLoader');
+}
+
+// ── Device search ─────────────────────────────────────────────────────────────
+document.getElementById('btnDeviceSearch').addEventListener('click', runDeviceSearch);
+document.getElementById('deviceSearchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runDeviceSearch();
+});
+
+async function runDeviceSearch() {
+  const q = document.getElementById('deviceSearchInput').value.trim();
+  if (q.length < 3) return;
+  const resultsEl = document.getElementById('deviceSearchResults');
+  showLoading(resultsEl);
+  const rows = await api(`/api/devices/search?q=${encodeURIComponent(q)}`, []);
+  if (!rows || !rows.length) {
+    resultsEl.innerHTML = '<p style="color:var(--muted);padding:8px">No devices found.</p>';
+    return;
   }
   resultsEl.innerHTML = rows.map(r => `
     <div class="search-result-item" onclick="drillDevice('${r.deviceid}')">

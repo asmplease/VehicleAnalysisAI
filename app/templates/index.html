@@ -17,7 +17,7 @@
 <header class="topbar">
   <div class="topbar-left">
     <span class="logo">🚗 VehicleAnalysisAI</span>
-    <span class="badge">Analytics Dashboard</span>
+    
   </div>
   <div class="topbar-right">
     <span id="refreshTs" class="muted-text"></span>
@@ -63,9 +63,9 @@
     <div class="chart-card wide">
       <div class="card-header">
         <h3>Daily Alert Trend</h3>
-        <span class="sub">Stacked by type — Recent</span>
+        <span class="sub">Stacked by type (last 30 days)</span>
       </div>
-      <div class="card-loader" id="ld-chartDailyTrend"><div class="spinner"></div> Loading from Athena…</div>
+      <div class="card-loader" id="ld-chartDailyTrend"><div class="spinner"></div> Loading...</div>
       <canvas id="chartDailyTrend"></canvas>
     </div>
     <div class="chart-card">
@@ -82,7 +82,7 @@
         <h3>Alerts by Hour of Day</h3>
         <span class="sub">When do incidents peak?</span>
       </div>
-      <div class="card-loader" id="ld-chartHourly"><div class="spinner"></div> Loading from Athena…</div>
+      <div class="card-loader" id="ld-chartHourly"><div class="spinner"></div> Loading...</div>
       <canvas id="chartHourly"></canvas>
     </div>
     <div class="chart-card">
@@ -120,7 +120,7 @@
     <div class="chart-card wide">
       <div class="card-header">
         <h3>Top Risky Devices</h3>
-        <span class="sub">Ranked by total alerts — Recent</span>
+        <span class="sub">Ranked by total alerts (last 30 days)</span>
       </div>
       <div class="table-scroll">
         <table id="tblTopDevices">
@@ -141,14 +141,14 @@
   <div class="section-heading">✅ Good Driving Behaviour</div>
   <div class="chart-row">
     <div class="chart-card">
-      <div class="card-header"><h3>Driver Safety Split</h3><span class="sub">Safe vs Risky — Recent</span></div>
+      <div class="card-header"><h3>Driver Safety Split</h3><span class="sub">Safe vs Risky (last 30 days)</span></div>
       <div class="card-loader" id="ld-chartDriverSplit"><div class="spinner"></div> Loading…</div>
       <canvas id="chartDriverSplit"></canvas>
     </div>
     <div class="chart-card wide">
       <div class="card-header">
         <h3>Top Safe Drivers</h3>
-        <span class="sub">Most active devices with zero alerts — Recent</span>
+        <span class="sub">Most active devices with zero alerts (last 30 days)</span>
       </div>
       <div class="table-scroll">
         <table id="tblSafeDrivers">
@@ -255,8 +255,13 @@
 
     <!-- March date strip: one cell per day, coloured by alert volume -->
     <div class="date-strip-wrap">
-      <div class="date-strip-label">Daily Behaviour (hover for detail)</div>
-      <div id="dateBand" class="date-strip"></div>
+      <div class="date-strip-label">Daily Behaviour — Choose Date to map (Last 30 days)</div>
+      
+        <select id="dateSelect" style="margin-left:20px; padding:4px;">
+          <option value="">-- Loading dates --</option>
+        </select>
+        <button id="btnSwitchDate" class="btn">Load Route on Map</button>
+
       <div class="date-strip-legend">
         <span class="ds-legend-dot good"></span> Safe &nbsp;
         <span class="ds-legend-dot mild"></span> 1–3 alerts &nbsp;
