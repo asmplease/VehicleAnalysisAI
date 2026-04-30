@@ -1,6 +1,6 @@
 /* ─────────────────────────────────────────────────────────────────────────────
    VehicleAnalysisAI dashboard — app.js
-   All data comes from the Athena-backed FastAPI endpoints.
+   All data comes from the Database-backed FastAPI endpoints.
 ───────────────────────────────────────────────────────────────────────────── */
 
 // ── Colour palette ────────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ function destroyChart(id) {
 }
 
 function showLoading(el) {
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading from Athena…</div>';
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading data…</div>';
 }
 
 function ldHide(id) {
@@ -569,7 +569,7 @@ function buildDriverScorePanel(data) {
   // data === null means PG is still fetching — show a spinner
   if (data === null) {
     const sevBars = document.getElementById('sevBars');
-    if (sevBars) sevBars.innerHTML = '<div class="score-pg-loader"><div class="spinner"></div> Loading from PostgreSQL…</div>';
+    if (sevBars) sevBars.innerHTML = '<div class="score-pg-loader"><div class="spinner"></div> Loading data…</div>';
     const sevDate = document.getElementById('sevDate');
     if (sevDate) sevDate.textContent = '';
     // Grey out the ring and stats while loading
