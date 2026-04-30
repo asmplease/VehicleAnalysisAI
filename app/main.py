@@ -476,7 +476,7 @@ def device_daily_alerts(device_id: str):
 
 
 @app.get("/api/devices/{device_id}/map")
-def device_map(device_id: str, day: int = None):
+def device_map(device_id: str, day: str = None):
     """GPS positions for this device, filtered to a single day of March 2026."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
@@ -485,7 +485,7 @@ def device_map(device_id: str, day: int = None):
                     SELECT latitude, longitude, gps_time, device_speed
                     FROM device_latest_position
                     WHERE device_id = %s
-                      AND date = make_date(2026, 3, %s)
+                      AND date = %s::date
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time ASC
                     LIMIT 500
@@ -516,7 +516,7 @@ def device_map(device_id: str, day: int = None):
 
 
 @app.get("/api/devices/{device_id}/route")
-def device_route(device_id: str, day: int = None):
+def device_route(device_id: str, day: str = None):
     """Ordered GPS track for a device — for polyline on map."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
@@ -525,7 +525,7 @@ def device_route(device_id: str, day: int = None):
                     SELECT latitude, longitude, gps_time, device_speed
                     FROM device_latest_position
                     WHERE device_id = %s
-                      AND date = make_date(2026, 3, %s)
+                      AND date = %s::date
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time ASC
                     LIMIT 500
@@ -571,19 +571,18 @@ def device_route(device_id: str, day: int = None):
 
 @app.get("/api/devices/{device_id}/days")
 def device_gps_days(device_id: str):
-    """Days in March 2026 that have GPS data for this device — for the route date picker."""
+    """Days that have GPS data for this device — for the route date picker."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    EXTRACT(DAY FROM date)::int AS day,
+                    date::text AS date,
                     COUNT(*) AS gps_points
                 FROM device_latest_position
                 WHERE device_id = %s
-                  AND date >= '2026-03-01' AND date <= '2026-03-31'
                   AND latitude IS NOT NULL AND longitude IS NOT NULL
                 GROUP BY date
-                ORDER BY date
+                ORDER BY date DESC
             """, (device_id,))
             return [dict(r) for r in cur.fetchall()]
 

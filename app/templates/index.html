@@ -17,7 +17,7 @@
 <header class="topbar">
   <div class="topbar-left">
     <span class="logo">🚗 VehicleAnalysisAI</span>
-    <span class="badge">March 2026</span>
+    <span class="badge">Analytics Dashboard</span>
   </div>
   <div class="topbar-right">
     <span id="refreshTs" class="muted-text"></span>
@@ -63,7 +63,7 @@
     <div class="chart-card wide">
       <div class="card-header">
         <h3>Daily Alert Trend</h3>
-        <span class="sub">Stacked by type — March 2026</span>
+        <span class="sub">Stacked by type — Recent</span>
       </div>
       <div class="card-loader" id="ld-chartDailyTrend"><div class="spinner"></div> Loading from Athena…</div>
       <canvas id="chartDailyTrend"></canvas>
@@ -120,7 +120,7 @@
     <div class="chart-card wide">
       <div class="card-header">
         <h3>Top Risky Devices</h3>
-        <span class="sub">Ranked by total alerts — March 2026</span>
+        <span class="sub">Ranked by total alerts — Recent</span>
       </div>
       <div class="table-scroll">
         <table id="tblTopDevices">
@@ -141,14 +141,14 @@
   <div class="section-heading">✅ Good Driving Behaviour</div>
   <div class="chart-row">
     <div class="chart-card">
-      <div class="card-header"><h3>Driver Safety Split</h3><span class="sub">Safe vs Risky — March 2026</span></div>
+      <div class="card-header"><h3>Driver Safety Split</h3><span class="sub">Safe vs Risky — Recent</span></div>
       <div class="card-loader" id="ld-chartDriverSplit"><div class="spinner"></div> Loading…</div>
       <canvas id="chartDriverSplit"></canvas>
     </div>
     <div class="chart-card wide">
       <div class="card-header">
         <h3>Top Safe Drivers</h3>
-        <span class="sub">Most active devices with zero alerts — March 2026</span>
+        <span class="sub">Most active devices with zero alerts — Recent</span>
       </div>
       <div class="table-scroll">
         <table id="tblSafeDrivers">
@@ -255,7 +255,7 @@
 
     <!-- March date strip: one cell per day, coloured by alert volume -->
     <div class="date-strip-wrap">
-      <div class="date-strip-label">March 2026 — Daily Behaviour (hover for detail)</div>
+      <div class="date-strip-label">Daily Behaviour (hover for detail)</div>
       <div id="dateBand" class="date-strip"></div>
       <div class="date-strip-legend">
         <span class="ds-legend-dot good"></span> Safe &nbsp;

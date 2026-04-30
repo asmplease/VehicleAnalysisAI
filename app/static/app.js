@@ -901,30 +901,12 @@ async function _loadRouteLayer(deviceId, day) {
   if (mapOv) mapOv.style.display = 'none';
 }
 
-async function switchRouteDay(day) {
-  document.querySelectorAll('.rdp-day').forEach(b =>
-    b.classList.toggle('active', parseInt(b.dataset.day) === day)
-  );
-  ldShow('pageLoader');
-  await _loadRouteLayer(_currentDeviceId, day);
-  ldHide('pageLoader');
-}
-
-// ── Device search ─────────────────────────────────────────────────────────────
-document.getElementById('btnDeviceSearch').addEventListener('click', runDeviceSearch);
-document.getElementById('deviceSearchInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') runDeviceSearch();
-});
-
-async function runDeviceSearch() {
-  const q = document.getElementById('deviceSearchInput').value.trim();
-  if (q.length < 3) return;
-  const resultsEl = document.getElementById('deviceSearchResults');
-  showLoading(resultsEl);
-  const rows = await api(`/api/devices/search?q=${encodeURIComponent(q)}`, []);
-  if (!rows || !rows.length) {
-    resultsEl.innerHTML = '<p style="color:var(--muted);padding:8px">No devices found.</p>';
-    return;
+async function switchRouteDay(dateStr) {
+    const sel = document.getElementById('dateSelect');
+    if (sel && sel.value !== dateStr) sel.value = dateStr;
+    ldShow('pageLoader');
+    await _loadRouteLayer(_currentDeviceId, dateStr);
+    ldHide('pageLoader');
   }
   resultsEl.innerHTML = rows.map(r => `
     <div class="search-result-item" onclick="drillDevice('${r.deviceid}')">

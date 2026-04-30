@@ -77,27 +77,30 @@ def get_driver_daily_scores(device_id: str) -> list[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT
-                        score_date,
-                        current_score,
-                        total_deductions,
-                        total_hb,
-                        total_ha,
-                        total_rt,
-                        COALESCE(hb_critical, 0) AS hb_critical,
-                        COALESCE(hb_high,     0) AS hb_high,
-                        COALESCE(hb_medium,   0) AS hb_medium,
-                        COALESCE(hb_low,      0) AS hb_low,
-                        COALESCE(ha_high,     0) AS ha_high,
-                        COALESCE(ha_medium,   0) AS ha_medium,
-                        COALESCE(ha_low,      0) AS ha_low,
-                        COALESCE(rt_high,     0) AS rt_high,
-                        COALESCE(rt_medium,   0) AS rt_medium,
-                        COALESCE(rt_low,      0) AS rt_low
-                    FROM driver_daily_scores
-                    WHERE device_id = %s
-                      AND score_date BETWEEN '2026-03-01' AND '2026-03-31'
-                    ORDER BY score_date ASC
+                    SELECT * FROM (
+                      SELECT
+                          score_date,
+                          current_score,
+                          total_deductions,
+                          total_hb,
+                          total_ha,
+                          total_rt,
+                          COALESCE(hb_critical, 0) AS hb_critical,
+                          COALESCE(hb_high,     0) AS hb_high,
+                          COALESCE(hb_medium,   0) AS hb_medium,
+                          COALESCE(hb_low,      0) AS hb_low,
+                          COALESCE(ha_high,     0) AS ha_high,
+                          COALESCE(ha_medium,   0) AS ha_medium,
+                          COALESCE(ha_low,      0) AS ha_low,
+                          COALESCE(rt_high,     0) AS rt_high,
+                          COALESCE(rt_medium,   0) AS rt_medium,
+                          COALESCE(rt_low,      0) AS rt_low
+                      FROM driver_daily_scores
+                      WHERE device_id = %s
+                      ORDER BY score_date DESC
+                      LIMIT 60
+                  ) sub
+                  ORDER BY score_date ASC
                     """,
                     (device_id,),
                 )
