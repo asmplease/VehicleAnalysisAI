@@ -46,8 +46,8 @@ class AnalyticsService:
                     (select count(distinct device_id) from public.driver_daily_scores) as scored_devices,
                     (select round(avg(current_score)::numeric, 2) from public.driver_daily_scores) as avg_score,
                     (select count(*) from public.device_behaviour_profile where risk_category = 'Critical') as critical_devices,
-                    (select count(*) from public.device_latest_position) as position_rows,
-                    (select count(*) from public.device_latest_position where device_speed > 180) as high_speed_rows
+                    (select count(*) from public.gps_points where gps_time >= now() - interval '24 hours') as position_rows,
+                    (select count(*) from public.gps_points where device_speed > 180 and gps_time >= now() - interval '24 hours') as high_speed_rows
             """,
             "score_bands": """
                 select
@@ -77,12 +77,11 @@ class AnalyticsService:
             "quality": """
                 select
                     count(*) as rows,
-                    count(*) filter (where date < date '2025-01-01' or date > current_date) as invalid_date_rows,
-                    count(*) filter (where gps_time < timestamp '2025-01-01' or gps_time > now() + interval '1 day') as invalid_gps_time_rows,
                     count(*) filter (where device_speed > 180) as speed_gt_180_rows,
                     round(avg(device_speed)::numeric, 2) as avg_speed,
                     max(device_speed) as max_speed
-                from public.device_latest_position
+                from public.gps_points
+                where gps_time >= now() - interval '24 hours'
             """,
         }
 
@@ -132,10 +131,10 @@ class AnalyticsService:
                     count(*) as rows,
                     count(distinct device_id) as devices,
                     round(avg(device_speed)::numeric, 2) as avg_speed
-                from public.device_latest_position
+                from public.gps_points
                 where latitude between -90 and 90
                   and longitude between -180 and 180
-                  and gps_time between timestamp '2025-01-01' and now() + interval '1 day'
+                  and gps_time >= now() - interval '7 days'
                 group by 1
                 order by rows desc
                 limit 10
@@ -186,8 +185,9 @@ class AnalyticsService:
                     count(*) filter (where device_speed > 180) as bad_speed_rows,
                     max(device_speed) as max_speed,
                     max(gps_time) as latest_bad_gps_time
-                from public.device_latest_position
+                from public.gps_points
                 where device_speed > 180
+                  and gps_time >= now() - interval '30 days'
                 group by device_id
                 order by bad_speed_rows desc, max_speed desc
                 limit 15
@@ -231,8 +231,9 @@ class AnalyticsService:
                     where device_id ilike %s
                     union
                     select device_id
-                    from public.device_latest_position
+                    from public.gps_points
                     where device_id ilike %s
+                      and gps_time >= now() - interval '30 days'
                 ),
                 candidate_scores as (
                     select
@@ -309,13 +310,14 @@ class AnalyticsService:
                 """
                 select
                     max(gps_time) as latest_gps_time,
-                    max(date) as latest_date,
+                    max(gps_time::date) as latest_date,
                     round(avg(device_speed)::numeric, 2) as avg_speed,
                     max(device_speed) as max_speed,
                     count(*) as rows,
                     count(*) filter (where device_speed > 180) as bad_speed_rows
-                from public.device_latest_position
+                from public.gps_points
                 where device_id = %s
+                  and gps_time >= now() - interval '30 days'
                 """,
                 (device_id,),
             )
@@ -474,18 +476,11 @@ class AnalyticsService:
                     count(*) filter (where device_speed > 0 and device_speed <= 180) as valid_speed_rows,
                     round(avg(case when device_speed <= 180 then device_speed end)::numeric,2) as clean_avg_speed,
                     max(case when device_speed <= 180 then device_speed end)     as clean_max_speed,
-                    count(*) filter (
-                        where gps_time < timestamp '2025-01-01'
-                           or gps_time > now() + interval '1 day'
-                    ) as invalid_timestamp_rows,
-                    min(case when gps_time between timestamp '2025-01-01'
-                                              and now() + interval '1 day'
-                             then gps_time end) as earliest_valid_gps,
-                    max(case when gps_time between timestamp '2025-01-01'
-                                              and now() + interval '1 day'
-                             then gps_time end) as latest_valid_gps
-                from public.device_latest_position
+                    min(gps_time)                                                as earliest_valid_gps,
+                    max(gps_time)                                                as latest_valid_gps
+                from public.gps_points
                 where device_id = %s
+                  and gps_time >= now() - interval '30 days'
                 """,
                 (device_id,),
             )
@@ -531,18 +526,19 @@ class AnalyticsService:
             cur.execute(
                 """
                 select
-                    date,
+                    gps_time::date as date,
                     gps_time,
                     latitude,
                     longitude,
                     device_speed,
                     orientation,
                     vehicle_type,
-                    updated_at
-                from public.device_latest_position
+                    alert
+                from public.gps_points
                 where device_id = %s
                   and latitude between -90 and 90
                   and longitude between -180 and 180
+                  and gps_time >= now() - interval '30 days'
                 order by gps_time desc nulls last
                 limit %s
                 """,
@@ -569,10 +565,9 @@ class AnalyticsService:
                         device_speed,
                         lag(device_speed) over (order by gps_time) as prev_speed,
                         lag(gps_time)     over (order by gps_time) as prev_time
-                    from public.device_latest_position
+                    from public.gps_points
                     where device_id = %s
-                      and gps_time between timestamp '2025-01-01'
-                                      and now() + interval '1 day'
+                      and gps_time >= now() - interval '30 days'
                       and device_speed between 0 and 180
                       and latitude  between -90  and 90
                       and longitude between -180 and 180
@@ -648,8 +643,9 @@ class AnalyticsService:
                     max(latitude)  + 0.08 as max_lat,
                     min(longitude) - 0.08 as min_lon,
                     max(longitude) + 0.08 as max_lon
-                from public.device_latest_position
+                from public.gps_points
                 where device_id = %s
+                  and gps_time >= now() - interval '30 days'
                   and latitude  between -90  and 90
                   and longitude between -180 and 180
                 """,
@@ -707,11 +703,10 @@ class AnalyticsService:
                         longitude,
                         device_speed,
                         orientation,
-                        date
-                    from public.device_latest_position
+                        gps_time::date as date
+                    from public.gps_points
                     where device_id = %s
-                      and gps_time between timestamp '2025-01-01'
-                                      and now() + interval '1 day'
+                      and gps_time >= now() - interval '30 days'
                       and device_speed between 0 and 180
                       and latitude  between -90 and 90
                       and longitude between -180 and 180
@@ -771,16 +766,16 @@ class AnalyticsService:
                     select
                         device_id,
                         gps_time,
-                        date,
+                        gps_time::date as date,
                         latitude,
                         longitude,
                         device_speed,
                         lag(gps_time) over (partition by device_id order by gps_time) as prev_gps_time,
                         lag(latitude) over (partition by device_id order by gps_time) as prev_latitude,
                         lag(longitude) over (partition by device_id order by gps_time) as prev_longitude
-                    from public.device_latest_position
+                    from public.gps_points
                     where device_id = %s
-                      and gps_time between timestamp '2025-01-01' and now() + interval '1 day'
+                      and gps_time >= now() - interval '30 days'
                       and device_speed between 0 and 180
                 ),
                 segmented as (
@@ -831,13 +826,13 @@ class AnalyticsService:
                 """
                 with ordered as (
                     select
-                        device_id, gps_time, date, latitude, longitude, device_speed,
+                        device_id, gps_time, gps_time::date as date, latitude, longitude, device_speed,
                         lag(gps_time) over (partition by device_id order by gps_time) as prev_gps_time,
                         lag(latitude) over (partition by device_id order by gps_time) as prev_latitude,
                         lag(longitude) over (partition by device_id order by gps_time) as prev_longitude
-                    from public.device_latest_position
+                    from public.gps_points
                     where device_id = %s
-                      and gps_time between timestamp '2025-01-01' and now() + interval '1 day'
+                      and gps_time >= now() - interval '30 days'
                       and device_speed between 0 and 180
                 ),
                 segmented as (

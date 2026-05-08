@@ -129,50 +129,33 @@ def fleet_daily_trend(days: int = Query(default=30, ge=7, le=60)):
 
 @app.get("/api/fleet/hourly-distribution")
 def fleet_hourly():
-    """Alert distribution by hour — uses GPS activity weighted by fleet alert ratios."""
+    """Alert distribution by hour — direct counts from gps_points.alert column."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
-            # 1) GPS activity by hour (high-speed points correlate with alert risk)
             cur.execute("""
                 SELECT
                     EXTRACT(HOUR FROM gps_time)::int AS hour,
-                    COUNT(*) AS pts
-                FROM device_latest_position
-                WHERE gps_time >= CURRENT_DATE - 30
-                  AND device_speed >= 20
+                    COUNT(*) FILTER (WHERE alert ILIKE '%braking%' OR alert ILIKE '%HB%') AS harsh_braking,
+                    COUNT(*) FILTER (WHERE alert ILIKE '%accel%'   OR alert ILIKE '%HA%') AS harsh_acceleration,
+                    COUNT(*) FILTER (WHERE alert ILIKE '%turn%'
+                                       OR alert ILIKE '%corner%'
+                                       OR alert ILIKE '%RT%')      AS harsh_cornering
+                FROM gps_points
+                WHERE gps_time >= NOW() - INTERVAL '7 days'
+                  AND alert IS NOT NULL
                 GROUP BY EXTRACT(HOUR FROM gps_time)
                 ORDER BY hour
             """)
-            hour_rows = {r["hour"]: r["pts"] for r in [dict(r) for r in cur.fetchall()]}
-
-            # 2) Fleet-wide alert ratios from driver_daily_scores
-            cur.execute("""
-                SELECT
-                    COALESCE(SUM(total_hb), 0) AS hb,
-                    COALESCE(SUM(total_ha), 0) AS ha,
-                    COALESCE(SUM(total_rt), 0) AS rt
-                FROM driver_daily_scores
-                WHERE score_date >= CURRENT_DATE - 30
-            """)
-            totals = dict(cur.fetchone())
-
-    hb_total = int(totals.get("hb") or 0)
-    ha_total = int(totals.get("ha") or 0)
-    rt_total = int(totals.get("rt") or 0)
-    alert_sum = hb_total + ha_total + rt_total or 1
-
-    hb_ratio = hb_total / alert_sum
-    ha_ratio = ha_total / alert_sum
-    rt_ratio = rt_total / alert_sum
+            alert_by_hour = {r["hour"]: r for r in [dict(r) for r in cur.fetchall()]}
 
     result = []
     for h in range(24):
-        pts = hour_rows.get(h, 0)
+        row = alert_by_hour.get(h, {})
         result.append({
             "hour":               h,
-            "harsh_braking":      int(round(pts * hb_ratio)),
-            "harsh_acceleration": int(round(pts * ha_ratio)),
-            "harsh_cornering":    int(round(pts * rt_ratio)),
+            "harsh_braking":      int(row.get("harsh_braking") or 0),
+            "harsh_acceleration": int(row.get("harsh_acceleration") or 0),
+            "harsh_cornering":    int(row.get("harsh_cornering") or 0),
         })
     return result
 
@@ -182,32 +165,26 @@ def fleet_speed_dist(
     alert_type: str = Query(default="harsh_braking",
                             pattern="^(harsh_braking|harsh_acceleration|harsh_cornering)$")
 ):
-    """Speed bucket histogram — filtered to devices with the selected alert type."""
-    col_map = {
-        "harsh_braking":      "total_hb",
-        "harsh_acceleration": "total_ha",
-        "harsh_cornering":    "total_rt",
+    """Speed bucket histogram for events with selected alert type — from gps_points."""
+    alert_kw_map = {
+        "harsh_braking":      "braking",
+        "harsh_acceleration": "accel",
+        "harsh_cornering":    "turn",
     }
-    col = col_map[alert_type]
+    kw = alert_kw_map[alert_type]
     with pg._conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(f"""
-                WITH alert_devices AS (
-                    SELECT DISTINCT device_id
-                    FROM driver_daily_scores
-                    WHERE score_date >= CURRENT_DATE - 30
-                      AND {col} > 0
-                )
+            cur.execute("""
                 SELECT
-                    (ROUND(p.device_speed / 10) * 10)::int AS speed_bucket,
+                    (ROUND(device_speed / 10) * 10)::int AS speed_bucket,
                     COUNT(*) AS events
-                FROM device_latest_position p
-                JOIN alert_devices a ON a.device_id = p.device_id
-                WHERE p.date >= CURRENT_DATE - 30
-                  AND p.device_speed >= 20 AND p.device_speed <= 200
-                GROUP BY ROUND(p.device_speed / 10) * 10
+                FROM gps_points
+                WHERE gps_time >= NOW() - INTERVAL '7 days'
+                  AND alert ILIKE %s
+                  AND device_speed >= 0 AND device_speed <= 200
+                GROUP BY ROUND(device_speed / 10) * 10
                 ORDER BY speed_bucket
-            """)
+            """, (f"%{kw}%",))
             return [dict(r) for r in cur.fetchall()]
 
 
@@ -217,39 +194,32 @@ def fleet_hotspots(
                             pattern="^(harsh_braking|harsh_acceleration|harsh_cornering)$"),
     limit: int = Query(default=500, ge=50, le=2000),
 ):
-    """Lat/lon grid hotspots — filtered to devices with the selected alert type."""
-    col_map = {
-        "harsh_braking":      "total_hb",
-        "harsh_acceleration": "total_ha",
-        "harsh_cornering":    "total_rt",
+    """Lat/lon grid hotspots from real gps_points alert events."""
+    alert_kw_map = {
+        "harsh_braking":      "braking",
+        "harsh_acceleration": "accel",
+        "harsh_cornering":    "turn",
     }
-    col = col_map[alert_type]
+    kw = alert_kw_map[alert_type]
     with pg._conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(f"""
-                WITH alert_devices AS (
-                    SELECT DISTINCT device_id
-                    FROM driver_daily_scores
-                    WHERE score_date >= CURRENT_DATE - 30
-                      AND {col} > 0
-                )
+            cur.execute("""
                 SELECT
-                    ROUND(p.latitude::numeric,  3)::float  AS latitude,
-                    ROUND(p.longitude::numeric, 3)::float  AS longitude,
-                    COUNT(*)                               AS events,
-                    COUNT(DISTINCT p.device_id)            AS devices,
-                    ROUND(AVG(p.device_speed)::numeric, 1)::float AS avg_speed
-                FROM device_latest_position p
-                JOIN alert_devices a ON a.device_id = p.device_id
-                WHERE p.date >= CURRENT_DATE - 30
-                  AND p.latitude IS NOT NULL AND p.longitude IS NOT NULL
-                  AND p.latitude BETWEEN -90 AND 90
-                  AND p.longitude BETWEEN -180 AND 180
-                  AND p.device_speed >= 20
-                GROUP BY ROUND(p.latitude::numeric, 3), ROUND(p.longitude::numeric, 3)
+                    ROUND(latitude::numeric,  3)::float        AS latitude,
+                    ROUND(longitude::numeric, 3)::float        AS longitude,
+                    COUNT(*)                                   AS events,
+                    COUNT(DISTINCT device_id)                  AS devices,
+                    ROUND(AVG(device_speed)::numeric, 1)::float AS avg_speed
+                FROM gps_points
+                WHERE gps_time >= NOW() - INTERVAL '7 days'
+                  AND alert ILIKE %s
+                  AND latitude  IS NOT NULL AND longitude IS NOT NULL
+                  AND latitude  BETWEEN -90  AND 90
+                  AND longitude BETWEEN -180 AND 180
+                GROUP BY ROUND(latitude::numeric, 3), ROUND(longitude::numeric, 3)
                 ORDER BY events DESC
                 LIMIT %s
-            """, (limit,))
+            """, (f"%{kw}%", limit))
             return [dict(r) for r in cur.fetchall()]
 
 
@@ -310,12 +280,14 @@ def fleet_safe_drivers(limit: int = Query(default=25, ge=5, le=100)):
                     b.avg_score,
                     b.active_days,
                     b.total_alerts,
-                    COUNT(p.device_id) AS gps_points
+                    COALESCE(p.cnt, 0) AS gps_points
                 FROM best b
-                LEFT JOIN device_latest_position p
-                    ON p.device_id = b.device_id
-                   AND p.date >= CURRENT_DATE - 30
-                GROUP BY b.device_id, b.avg_score, b.active_days, b.total_alerts
+                LEFT JOIN (
+                    SELECT device_id, COUNT(*) AS cnt
+                    FROM gps_points
+                    WHERE gps_time >= NOW() - INTERVAL '30 days'
+                    GROUP BY device_id
+                ) p ON p.device_id = b.device_id
                 ORDER BY b.avg_score DESC, b.active_days DESC
                 LIMIT %s
             """, (limit,))
@@ -384,32 +356,16 @@ def device_summary(device_id: str):
 
 @app.get("/api/devices/{device_id}/timeline")
 def device_timeline(device_id: str):
-    """Alert-like events for this device.
-    Uses high-speed GPS positions as alert proxies and attaches the daily
-    score context so the frontend timeline table gets real lat/lon/speed."""
+    """Real alert events from gps_points.alert column for this device."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
-            # 1) Get daily scores for context
             cur.execute("""
-                SELECT score_date, current_score, total_hb, total_ha, total_rt
-                FROM driver_daily_scores
+                SELECT gps_time, device_speed, latitude, longitude, alert
+                FROM gps_points
                 WHERE device_id = %s
-                  AND score_date >= CURRENT_DATE - 30
-                ORDER BY score_date DESC
-            """, (device_id,))
-            scores_by_date = {}
-            for r in cur.fetchall():
-                d = dict(r)
-                scores_by_date[str(d["score_date"])] = d
-
-            # 2) Get high-speed GPS points as alert proxies
-            cur.execute("""
-                SELECT
-                    gps_time, device_speed, latitude, longitude, date
-                FROM device_latest_position
-                WHERE device_id = %s
-                  AND device_speed >= 30
-                  AND latitude IS NOT NULL AND longitude IS NOT NULL
+                  AND alert IS NOT NULL
+                  AND gps_time >= NOW() - INTERVAL '30 days'
+                  AND latitude  IS NOT NULL AND longitude IS NOT NULL
                 ORDER BY gps_time DESC
                 LIMIT 500
             """, (device_id,))
@@ -418,43 +374,27 @@ def device_timeline(device_id: str):
     events = []
     for p in positions:
         speed = float(p.get("device_speed") or 0)
-        date_key = str(p.get("date") or "")
-        day_scores = scores_by_date.get(date_key, {})
-        hb = int(day_scores.get("total_hb") or 0)
-        ha = int(day_scores.get("total_ha") or 0)
-        rt = int(day_scores.get("total_rt") or 0)
-
-        # Classify based on speed + day's dominant alert type
-        if speed >= 80:
+        alert_raw = (p.get("alert") or "").strip()
+        al = alert_raw.lower()
+        if "brak" in al or al == "hb":
             atype = "harsh_braking"
             aname = f"Harsh Braking — {speed:.0f} km/h"
-        elif speed >= 50:
-            # pick day's dominant non-braking type
-            if ha >= rt:
-                atype = "harsh_acceleration"
-                aname = f"Harsh Acceleration — {speed:.0f} km/h"
-            else:
-                atype = "harsh_cornering"
-                aname = f"Harsh Cornering — {speed:.0f} km/h"
+        elif "accel" in al or al == "ha":
+            atype = "harsh_acceleration"
+            aname = f"Harsh Acceleration — {speed:.0f} km/h"
+        elif "turn" in al or "corner" in al or al == "rt":
+            atype = "harsh_cornering"
+            aname = f"Harsh Cornering — {speed:.0f} km/h"
         else:
-            if rt > 0:
-                atype = "harsh_cornering"
-                aname = f"Harsh Cornering — {speed:.0f} km/h"
-            elif ha > 0:
-                atype = "harsh_acceleration"
-                aname = f"Harsh Acceleration — {speed:.0f} km/h"
-            else:
-                atype = "harsh_braking"
-                aname = f"Harsh Braking — {speed:.0f} km/h"
-
-        score = day_scores.get("current_score", "—")
+            atype = alert_raw
+            aname = f"{alert_raw} — {speed:.0f} km/h"
         events.append({
             "gpstime":          str(p.get("gps_time") or ""),
             "alerttype":        atype,
-            "alertdisplayname": f"{aname} (score: {score})",
+            "alertdisplayname": aname,
             "speed":            speed,
-            "latitude":         float(p.get("latitude")),
-            "longitude":        float(p.get("longitude")),
+            "latitude":         float(p["latitude"]),
+            "longitude":        float(p["longitude"]),
         })
     return events
 
@@ -477,15 +417,15 @@ def device_daily_alerts(device_id: str):
 
 @app.get("/api/devices/{device_id}/map")
 def device_map(device_id: str, date: str = None):
-    """GPS positions for this device, optionally filtered to a specific YYYY-MM-DD date."""
+    """GPS positions for this device from gps_points, optionally filtered to a YYYY-MM-DD date."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
             if date:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
-                    FROM device_latest_position
+                    FROM gps_points
                     WHERE device_id = %s
-                      AND date = %s
+                      AND gps_time::date = %s
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time ASC
                     LIMIT 500
@@ -493,8 +433,9 @@ def device_map(device_id: str, date: str = None):
             else:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
-                    FROM device_latest_position
+                    FROM gps_points
                     WHERE device_id = %s
+                      AND gps_time >= NOW() - INTERVAL '24 hours'
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time DESC
                     LIMIT 500
@@ -516,16 +457,16 @@ def device_map(device_id: str, date: str = None):
 
 
 @app.get("/api/devices/{device_id}/route")
-def device_route(device_id: str, day: int = None):
-    """Ordered GPS track for a device — for polyline on map."""
+def device_route(device_id: str, date: str = None):
+    """Ordered GPS track for a device from gps_points — for polyline on map."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
             if date:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
-                    FROM device_latest_position
+                    FROM gps_points
                     WHERE device_id = %s
-                      AND date = %s
+                      AND gps_time::date = %s
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time ASC
                     LIMIT 500
@@ -533,8 +474,9 @@ def device_route(device_id: str, day: int = None):
             else:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
-                    FROM device_latest_position
+                    FROM gps_points
                     WHERE device_id = %s
+                      AND gps_time >= NOW() - INTERVAL '24 hours'
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time DESC
                     LIMIT 500
@@ -571,19 +513,19 @@ def device_route(device_id: str, day: int = None):
 
 @app.get("/api/devices/{device_id}/days")
 def device_gps_days(device_id: str):
-    """Days that have GPS data for this device — for the route date picker."""
+    """Days that have GPS data for this device — from gps_points for the route date picker."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    EXTRACT(DAY FROM date)::int AS day,
+                    gps_time::date AS date,
                     COUNT(*) AS gps_points
-                FROM device_latest_position
+                FROM gps_points
                 WHERE device_id = %s
-                  AND date >= CURRENT_DATE - 30
+                  AND gps_time >= NOW() - INTERVAL '30 days'
                   AND latitude IS NOT NULL AND longitude IS NOT NULL
-                GROUP BY date
-                ORDER BY date
+                GROUP BY gps_time::date
+                ORDER BY date DESC
             """, (device_id,))
             return [dict(r) for r in cur.fetchall()]
 
