@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+from threading import Lock
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from cachetools import TTLCache
 
 from app.config import STATIC_DIR, TEMPLATES_DIR
 from app.analytics_service import AnalyticsService
@@ -13,11 +15,96 @@ import app.pg_service as pg
 
 log = logging.getLogger(__name__)
 
+# Cache expensive gps_points aggregate queries for 5 minutes
+_hourly_cache: TTLCache = TTLCache(maxsize=4, ttl=300)
+_hourly_lock = Lock()
+_speed_cache: TTLCache = TTLCache(maxsize=6, ttl=300)
+_speed_lock = Lock()
+_hotspot_cache: TTLCache = TTLCache(maxsize=6, ttl=300)
+_hotspot_lock = Lock()
+
+
+
 app = FastAPI(title="VehicleAnalysisAI", version="1.0.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 svc = AnalyticsService()
+
+
+@app.on_event("startup")
+async def warm_caches():
+    """Setup hotspot summary table and start background refresh thread."""
+    import threading
+    import time as _time
+
+    def _setup_summary_table():
+        """Create gps_hotspot_summary if absent, then refresh in a loop every 5 min."""
+        try:
+            with pg._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS gps_hotspot_summary (
+                            alert      VARCHAR(5) NOT NULL,
+                            latitude   DOUBLE PRECISION NOT NULL,
+                            longitude  DOUBLE PRECISION NOT NULL,
+                            events     INTEGER NOT NULL,
+                            avg_speed  DOUBLE PRECISION
+                        )
+                    """)
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_hotspot_summary_lookup
+                        ON gps_hotspot_summary (alert, events DESC)
+                    """)
+                conn.commit()
+            log.info("gps_hotspot_summary table ready")
+        except Exception as exc:
+            log.warning("Failed to setup hotspot summary table: %s", exc)
+            return
+
+        while True:
+            try:
+                for code in ('HB', 'HA', 'RT'):
+                    with pg._conn() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("DELETE FROM gps_hotspot_summary WHERE alert = %s", (code,))
+                            cur.execute("""
+                                INSERT INTO gps_hotspot_summary
+                                       (alert, latitude, longitude, events, avg_speed)
+                                SELECT %s,
+                                       ROUND(latitude::numeric, 2)::float,
+                                       ROUND(longitude::numeric, 2)::float,
+                                       COUNT(*),
+                                       ROUND(AVG(device_speed)::numeric, 1)::float
+                                FROM gps_points
+                                WHERE gps_time >= NOW() - INTERVAL '3 days'
+                                  AND alert = %s
+                                  AND latitude  BETWEEN -90  AND 90
+                                  AND longitude BETWEEN -180 AND 180
+                                GROUP BY ROUND(latitude::numeric, 2),
+                                         ROUND(longitude::numeric, 2)
+                            """, (code, code))
+                        conn.commit()
+                # Invalidate in-memory cache so next request re-reads fresh DB data
+                with _hotspot_lock:
+                    _hotspot_cache.clear()
+                log.info("gps_hotspot_summary refreshed")
+            except Exception as exc:
+                log.warning("hotspot summary refresh failed: %s", exc)
+            _time.sleep(300)
+
+    threading.Thread(target=_setup_summary_table, daemon=True).start()
+
+    # Pre-warm hourly and speed caches (fast queries, can run inline)
+    def _warm_fast():
+        try:
+            fleet_hourly()
+            for at in ("harsh_braking", "harsh_acceleration", "harsh_cornering"):
+                fleet_speed_dist(alert_type=at)
+            log.info("Fast caches warmed.")
+        except Exception as exc:
+            log.warning("Fast cache warming failed: %s", exc)
+    threading.Thread(target=_warm_fast, daemon=True).start()
 
 
 def _safe(fn, *args, fallback=None, **kwargs):
@@ -129,25 +216,25 @@ def fleet_daily_trend(days: int = Query(default=30, ge=7, le=60)):
 
 @app.get("/api/fleet/hourly-distribution")
 def fleet_hourly():
-    """Alert distribution by hour — direct counts from gps_points.alert column."""
+    """Alert distribution by hour — direct counts from gps_points.alert column (cached 5 min)."""
+    with _hourly_lock:
+        if 'hourly' in _hourly_cache:
+            return _hourly_cache['hourly']
     with pg._conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
                     EXTRACT(HOUR FROM gps_time)::int AS hour,
-                    COUNT(*) FILTER (WHERE alert ILIKE '%braking%' OR alert ILIKE '%HB%') AS harsh_braking,
-                    COUNT(*) FILTER (WHERE alert ILIKE '%accel%'   OR alert ILIKE '%HA%') AS harsh_acceleration,
-                    COUNT(*) FILTER (WHERE alert ILIKE '%turn%'
-                                       OR alert ILIKE '%corner%'
-                                       OR alert ILIKE '%RT%')      AS harsh_cornering
+                    COUNT(*) FILTER (WHERE alert = 'HB') AS harsh_braking,
+                    COUNT(*) FILTER (WHERE alert = 'HA') AS harsh_acceleration,
+                    COUNT(*) FILTER (WHERE alert = 'RT') AS harsh_cornering
                 FROM gps_points
                 WHERE gps_time >= NOW() - INTERVAL '7 days'
-                  AND alert IS NOT NULL
+                  AND alert IN ('HB', 'HA', 'RT')
                 GROUP BY EXTRACT(HOUR FROM gps_time)
                 ORDER BY hour
             """)
             alert_by_hour = {r["hour"]: r for r in [dict(r) for r in cur.fetchall()]}
-
     result = []
     for h in range(24):
         row = alert_by_hour.get(h, {})
@@ -157,6 +244,8 @@ def fleet_hourly():
             "harsh_acceleration": int(row.get("harsh_acceleration") or 0),
             "harsh_cornering":    int(row.get("harsh_cornering") or 0),
         })
+    with _hourly_lock:
+        _hourly_cache['hourly'] = result
     return result
 
 
@@ -165,13 +254,16 @@ def fleet_speed_dist(
     alert_type: str = Query(default="harsh_braking",
                             pattern="^(harsh_braking|harsh_acceleration|harsh_cornering)$")
 ):
-    """Speed bucket histogram for events with selected alert type — from gps_points."""
-    alert_kw_map = {
-        "harsh_braking":      "braking",
-        "harsh_acceleration": "accel",
-        "harsh_cornering":    "turn",
+    """Speed bucket histogram for events with selected alert type (cached 5 min)."""
+    alert_code_map = {
+        "harsh_braking":      "HB",
+        "harsh_acceleration": "HA",
+        "harsh_cornering":    "RT",
     }
-    kw = alert_kw_map[alert_type]
+    code = alert_code_map[alert_type]
+    with _speed_lock:
+        if alert_type in _speed_cache:
+            return _speed_cache[alert_type]
     with pg._conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -180,47 +272,47 @@ def fleet_speed_dist(
                     COUNT(*) AS events
                 FROM gps_points
                 WHERE gps_time >= NOW() - INTERVAL '7 days'
-                  AND alert ILIKE %s
+                  AND alert = %s
                   AND device_speed >= 0 AND device_speed <= 200
                 GROUP BY ROUND(device_speed / 10) * 10
                 ORDER BY speed_bucket
-            """, (f"%{kw}%",))
-            return [dict(r) for r in cur.fetchall()]
+            """, (code,))
+            result = [dict(r) for r in cur.fetchall()]
+    with _speed_lock:
+        _speed_cache[alert_type] = result
+    return result
 
 
 @app.get("/api/fleet/hotspots")
 def fleet_hotspots(
     alert_type: str = Query(default="harsh_braking",
                             pattern="^(harsh_braking|harsh_acceleration|harsh_cornering)$"),
-    limit: int = Query(default=500, ge=50, le=2000),
+    limit: int = Query(default=200, ge=50, le=500),
 ):
-    """Lat/lon grid hotspots from real gps_points alert events."""
-    alert_kw_map = {
-        "harsh_braking":      "braking",
-        "harsh_acceleration": "accel",
-        "harsh_cornering":    "turn",
+    """Lat/lon grid hotspots — reads from pre-aggregated summary table (instant)."""
+    alert_code_map = {
+        "harsh_braking":      "HB",
+        "harsh_acceleration": "HA",
+        "harsh_cornering":    "RT",
     }
-    kw = alert_kw_map[alert_type]
+    code = alert_code_map[alert_type]
+    cache_key = (alert_type, limit)
+    with _hotspot_lock:
+        if cache_key in _hotspot_cache:
+            return _hotspot_cache[cache_key]
     with pg._conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT
-                    ROUND(latitude::numeric,  3)::float        AS latitude,
-                    ROUND(longitude::numeric, 3)::float        AS longitude,
-                    COUNT(*)                                   AS events,
-                    COUNT(DISTINCT device_id)                  AS devices,
-                    ROUND(AVG(device_speed)::numeric, 1)::float AS avg_speed
-                FROM gps_points
-                WHERE gps_time >= NOW() - INTERVAL '7 days'
-                  AND alert ILIKE %s
-                  AND latitude  IS NOT NULL AND longitude IS NOT NULL
-                  AND latitude  BETWEEN -90  AND 90
-                  AND longitude BETWEEN -180 AND 180
-                GROUP BY ROUND(latitude::numeric, 3), ROUND(longitude::numeric, 3)
+                SELECT latitude, longitude, events, avg_speed
+                FROM gps_hotspot_summary
+                WHERE alert = %s
                 ORDER BY events DESC
                 LIMIT %s
-            """, (f"%{kw}%", limit))
-            return [dict(r) for r in cur.fetchall()]
+            """, (code, limit))
+            result = [dict(r) for r in cur.fetchall()]
+    with _hotspot_lock:
+        _hotspot_cache[cache_key] = result
+    return result
 
 
 @app.get("/api/fleet/top-devices")
@@ -363,11 +455,11 @@ def device_timeline(device_id: str):
                 SELECT gps_time, device_speed, latitude, longitude, alert
                 FROM gps_points
                 WHERE device_id = %s
-                  AND alert IS NOT NULL
-                  AND gps_time >= NOW() - INTERVAL '30 days'
+                                    AND alert IN ('HB', 'HA', 'RT')
+                                    AND gps_time >= NOW() - INTERVAL '7 days'
                   AND latitude  IS NOT NULL AND longitude IS NOT NULL
                 ORDER BY gps_time DESC
-                LIMIT 500
+                                LIMIT 200
             """, (device_id,))
             positions = [dict(r) for r in cur.fetchall()]
 
@@ -425,11 +517,12 @@ def device_map(device_id: str, date: str = None):
                     SELECT latitude, longitude, gps_time, device_speed
                     FROM gps_points
                     WHERE device_id = %s
-                      AND gps_time::date = %s
+                      AND gps_time >= %s::date
+                      AND gps_time <  %s::date + INTERVAL '1 day'
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time ASC
                     LIMIT 500
-                """, (device_id, date))
+                """, (device_id, date, date))
             else:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
@@ -466,11 +559,12 @@ def device_route(device_id: str, date: str = None):
                     SELECT latitude, longitude, gps_time, device_speed
                     FROM gps_points
                     WHERE device_id = %s
-                      AND gps_time::date = %s
+                      AND gps_time >= %s::date
+                      AND gps_time <  %s::date + INTERVAL '1 day'
                       AND latitude IS NOT NULL AND longitude IS NOT NULL
                     ORDER BY gps_time ASC
                     LIMIT 500
-                """, (device_id, date))
+                """, (device_id, date, date))
             else:
                 cur.execute("""
                     SELECT latitude, longitude, gps_time, device_speed
@@ -513,18 +607,16 @@ def device_route(device_id: str, date: str = None):
 
 @app.get("/api/devices/{device_id}/days")
 def device_gps_days(device_id: str):
-    """Days that have GPS data for this device — from gps_points for the route date picker."""
+    """Days that have scored device data for the route date picker."""
     with pg._conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    gps_time::date AS date,
-                    COUNT(*) AS gps_points
-                FROM gps_points
+                    score_date AS date,
+                    (total_hb + total_ha + total_rt)::int AS gps_points
+                FROM driver_daily_scores
                 WHERE device_id = %s
-                  AND gps_time >= NOW() - INTERVAL '30 days'
-                  AND latitude IS NOT NULL AND longitude IS NOT NULL
-                GROUP BY gps_time::date
+                  AND score_date >= CURRENT_DATE - 30
                 ORDER BY date DESC
             """, (device_id,))
             return [dict(r) for r in cur.fetchall()]

@@ -1,6 +1,6 @@
 /* ─────────────────────────────────────────────────────────────────────────────
    VehicleAnalysisAI dashboard — app.js
-   All data comes from the Athena-backed FastAPI endpoints.
+  All data comes from the FastAPI endpoints.
 ───────────────────────────────────────────────────────────────────────────── */
 
 // ── Colour palette ────────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ function destroyChart(id) {
 }
 
 function showLoading(el) {
-  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading from Athena…</div>';
+  el.innerHTML = '<div class="loading"><div class="spinner"></div>Loading data...</div>';
 }
 
 function ldHide(id) {
@@ -297,17 +297,21 @@ async function loadHourlyDistribution() {
 }
 
 async function loadHotspotTable(alType) {
-  const rows = await api(`/api/fleet/hotspots?alert_type=${alType}&limit=2000`, []);
-  if (!rows || !rows.length) return;
-  const top = rows.sort((a, b) => b.events - a.events).slice(0, 20);
   const tbody = document.querySelector('#tblHotspotLocations tbody');
+  tbody.innerHTML = '<tr class="tbl-loader"><td colspan="6"><div class="spinner"></div> Loading…</td></tr>';
+  const rows = await api(`/api/fleet/hotspots?alert_type=${alType}&limit=50`, []);
+  if (!rows || !rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--muted);padding:16px">No data</td></tr>';
+    return;
+  }
+  const top = rows.sort((a, b) => b.events - a.events).slice(0, 20);
   tbody.innerHTML = top.map((r, i) => `
     <tr>
       <td>${i + 1}</td>
       <td>${r.latitude}</td>
       <td>${r.longitude}</td>
       <td><strong>${fmt(r.events)}</strong></td>
-      <td>${r.devices}</td>
+      <td>${r.devices ?? '—'}</td>
       <td>${r.avg_speed ?? '—'} km/h</td>
     </tr>
   `).join('');
@@ -315,7 +319,10 @@ async function loadHotspotTable(alType) {
 
 async function loadSpeedDist(alType) {
   const rows = await api(`/api/fleet/speed-distribution?alert_type=${alType}`, []);
-  if (!rows || !rows.length) return;
+  if (!rows || !rows.length) {
+    ldHide('ld-chartSpeed');
+    return;
+  }
   destroyChart('chartSpeed');
   new Chart(document.getElementById('chartSpeed'), {
     type: 'bar',
@@ -423,7 +430,7 @@ async function loadOneHotspotLayer(alType, checked) {
   const overlay = document.getElementById('alertMapLoading');
   if (overlay) overlay.style.display = 'flex';
 
-  const rows = await api(`/api/fleet/hotspots?alert_type=${alType}&limit=2000`, []);
+  const rows = await api(`/api/fleet/hotspots?alert_type=${alType}&limit=200`, []);
 
   if (overlay) overlay.style.display = 'none';
   if (!rows || !rows.length) return;
@@ -815,49 +822,61 @@ function _rebuildAlertLayer() {
 async function _loadRouteLayer(deviceId, dateStr) {
   const mapOv = document.getElementById('mapOverlayRoute');
   if (mapOv) mapOv.style.display = 'flex';
-  
-  const query = dateStr ? `?date=${dateStr}` : '';
-  const dayAlerts = await api(`/api/devices/${deviceId}/map${query}`, []);
-  _currentAlertRows = dayAlerts;
-  const alertPts = _rebuildAlertLayer();
-  
-  if (_routeLayer) _routeLayer.remove();
-  _routeLayer = L.layerGroup();
-  const routePts = [];
-  const route = await api(`/api/devices/${deviceId}/route${query}`, []);
-  
-  if (route && route.length > 1) {
-    const pts = route.map(r => [r.latitude, r.longitude]);
-    routePts.push(...pts);
-    L.polyline(pts, { color: C.accent, weight: 3, opacity: 0.85, smoothFactor: 2 })
-      .bindPopup(`<b>GPS Route — ${dateStr ?? 'All time'}</b><br>${route.length} pts<br>
-                  <small>${route[0].gps_time || route[0].gpstime} → ${route[route.length-1].gps_time || route[route.length-1].gpstime}</small>`)
-      .addTo(_routeLayer);
-      
-    L.circleMarker(pts[0], { radius: 7, color: '#fff', fillColor: C.green, fillOpacity: 1, weight: 2 })
-      .bindPopup(`<b>▶ Start</b><br>${route[0].gps_time || route[0].gpstime}`)
-      .addTo(_routeLayer);
-      
-    L.circleMarker(pts[pts.length-1], { radius: 7, color: '#fff', fillColor: '#334155', fillOpacity: 1, weight: 2 })
-      .bindPopup(`<b>■ End</b><br>${route[route.length-1].gps_time || route[route.length-1].gpstime}`)
-      .addTo(_routeLayer);
+
+  try {
+    const query = dateStr ? `?date=${dateStr}` : '';
+
+    // Fetch map (alerts) and route (polyline) in parallel
+    const [dayAlerts, route] = await Promise.all([
+      api(`/api/devices/${deviceId}/map${query}`, []),
+      api(`/api/devices/${deviceId}/route${query}`, []),
+    ]);
+
+    _currentAlertRows = dayAlerts;
+    const alertPts = _rebuildAlertLayer();
+
+    if (_routeLayer) _routeLayer.remove();
+    _routeLayer = L.layerGroup();
+    const routePts = [];
+
+    if (route && route.length > 1) {
+      const pts = route.map(r => [r.latitude, r.longitude]);
+      routePts.push(...pts);
+      L.polyline(pts, { color: C.accent, weight: 3, opacity: 0.85, smoothFactor: 2 })
+        .bindPopup(`<b>GPS Route — ${dateStr ?? 'All time'}</b><br>${route.length} pts<br>
+                    <small>${route[0].gps_time || route[0].gpstime} → ${route[route.length-1].gps_time || route[route.length-1].gpstime}</small>`)
+        .addTo(_routeLayer);
+
+      L.circleMarker(pts[0], { radius: 7, color: '#fff', fillColor: C.green, fillOpacity: 1, weight: 2 })
+        .bindPopup(`<b>▶ Start</b><br>${route[0].gps_time || route[0].gpstime}`)
+        .addTo(_routeLayer);
+
+      L.circleMarker(pts[pts.length-1], { radius: 7, color: '#fff', fillColor: '#334155', fillOpacity: 1, weight: 2 })
+        .bindPopup(`<b>■ End</b><br>${route[route.length-1].gps_time || route[route.length-1].gpstime}`)
+        .addTo(_routeLayer);
+    }
+
+    _routeLayer.addTo(deviceMap);
+    const allPts = [...routePts, ...alertPts];
+
+    if (allPts.length > 0) {
+      deviceMap.fitBounds(L.latLngBounds(allPts), { padding: [30, 30] });
+    }
+  } catch (err) {
+    console.error('Route layer load failed', err);
+  } finally {
+    setTimeout(() => deviceMap.invalidateSize(), 150);
+    if (mapOv) mapOv.style.display = 'none';
   }
-  
-  _routeLayer.addTo(deviceMap);
-  const allPts = [...routePts, ...alertPts];
-  
-  if (allPts.length > 0) {
-    deviceMap.fitBounds(L.latLngBounds(allPts), { padding: [30, 30] });
-  }
-  
-  setTimeout(() => deviceMap.invalidateSize(), 150);
-  if (mapOv) mapOv.style.display = 'none';
 }
 
 async function switchRouteDay(dateStr) {
   ldShow('pageLoader');
-  await _loadRouteLayer(_currentDeviceId, dateStr);
-  ldHide('pageLoader');
+  try {
+    await _loadRouteLayer(_currentDeviceId, dateStr);
+  } finally {
+    ldHide('pageLoader');
+  }
 }
 
 // ── Device search ─────────────────────────────────────────────────────────────

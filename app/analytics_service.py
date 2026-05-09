@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+from threading import Lock
 from typing import Any
+
+from cachetools import TTLCache, cached
+from cachetools.keys import hashkey
 
 from app.config import DEFAULT_DAYS, MAX_POSITION_ROWS, MAX_TREND_DAYS
 from app.db import get_cursor
 from app.schemas import normalize_rows
+
+# Fleet-wide results: 5-minute TTL (aggregates that rarely change)
+_fleet_cache: TTLCache = TTLCache(maxsize=16, ttl=300)
+_fleet_lock = Lock()
+
+# Per-device results: 3-minute TTL (device-keyed, more varied)
+_device_cache: TTLCache = TTLCache(maxsize=200, ttl=180)
+_device_lock = Lock()
 
 
 class AnalyticsService:
@@ -38,6 +50,7 @@ class AnalyticsService:
             )
             return normalize_rows(cur.fetchall())
 
+    @cached(cache=_fleet_cache, lock=_fleet_lock, key=lambda self: hashkey('dashboard_overview'))
     def get_dashboard_overview(self) -> dict[str, Any]:
         queries = {
             "overview": """
@@ -115,6 +128,7 @@ class AnalyticsService:
             )
             return normalize_rows(cur.fetchall())
 
+    @cached(cache=_fleet_cache, lock=_fleet_lock, key=lambda self: hashkey('advanced_analytics'))
     def get_advanced_analytics(self) -> dict[str, Any]:
         queries = {
             "event_mix": """
@@ -194,11 +208,12 @@ class AnalyticsService:
             """,
             "data_points_trend": """
                 select
-                    analytics_date,
+                    gps_time::date          as analytics_date,
                     count(distinct device_id) as active_devices,
-                    sum(points_count) as total_points
-                from public.gps_points_analytics
-                group by analytics_date
+                    count(*)                as total_points
+                from public.gps_points
+                where gps_time >= now() - interval '14 days'
+                group by gps_time::date
                 order by analytics_date desc
                 limit 14
             """,
@@ -309,15 +324,16 @@ class AnalyticsService:
             cur.execute(
                 """
                 select
-                    max(gps_time) as latest_gps_time,
-                    max(gps_time::date) as latest_date,
-                    round(avg(device_speed)::numeric, 2) as avg_speed,
-                    max(device_speed) as max_speed,
-                    count(*) as rows,
-                    count(*) filter (where device_speed > 180) as bad_speed_rows
+                    gps_time as latest_gps_time,
+                    gps_time::date as latest_date,
+                    round(device_speed::numeric, 2) as avg_speed,
+                    device_speed as max_speed,
+                    1 as rows,
+                    case when device_speed > 180 then 1 else 0 end as bad_speed_rows
                 from public.gps_points
                 where device_id = %s
-                  and gps_time >= now() - interval '30 days'
+                order by gps_time desc
+                limit 1
                 """,
                 (device_id,),
             )
@@ -546,6 +562,7 @@ class AnalyticsService:
             )
             return normalize_rows(cur.fetchall())
 
+    @cached(cache=_device_cache, lock=_device_lock, key=lambda self, device_id, limit=60: hashkey('decel', device_id, limit))
     def get_device_deceleration_spots(self, device_id: str, limit: int = 60) -> list[dict[str, Any]]:
         """
         Find candidate speed-bump / speed-breaker locations for a device.
@@ -625,6 +642,7 @@ class AnalyticsService:
             )
             return normalize_rows(cur.fetchall())
 
+    @cached(cache=_device_cache, lock=_device_lock, key=lambda self, device_id, days=30, limit=200: hashkey('fleet_hotspots', device_id, days, limit))
     def get_fleet_hotspots_near_device(
         self, device_id: str, days: int = 30, limit: int = 200
     ) -> list[dict[str, Any]]:
@@ -666,27 +684,28 @@ class AnalyticsService:
                 cur.execute(
                     """
                     select
-                        round(latitude_4dp::numeric,  4)       as latitude,
-                        round(longitude_4dp::numeric, 4)       as longitude,
+                        round(latitude::numeric,  4)           as latitude,
+                        round(longitude::numeric, 4)           as longitude,
                         count(distinct device_id)              as unique_devices,
-                        sum(points_count)                      as total_points,
-                        count(distinct analytics_date)         as active_days,
-                        max(analytics_date)                    as latest_date
-                    from public.gps_points_analytics
-                    where analytics_date >= current_date - %s
-                      and latitude_4dp  between %s and %s
-                      and longitude_4dp between %s and %s
-                    group by latitude_4dp, longitude_4dp
-                    having sum(points_count) > 5
+                        count(*)                               as total_points,
+                        count(distinct gps_time::date)         as active_days,
+                        max(gps_time::date)                    as latest_date
+                    from public.gps_points
+                    where gps_time >= now() - interval '30 days'
+                      and latitude  between %s and %s
+                      and longitude between %s and %s
+                    group by round(latitude::numeric, 4), round(longitude::numeric, 4)
+                    having count(*) > 5
                     order by unique_devices desc, total_points desc
                     limit %s
                     """,
-                    (safe_days, min_lat, max_lat, min_lon, max_lon, safe_limit),
+                    (min_lat, max_lat, min_lon, max_lon, safe_limit),
                 )
                 return normalize_rows(cur.fetchall())
             except Exception:
                 return []
 
+    @cached(cache=_device_cache, lock=_device_lock, key=lambda self, device_id, limit=300: hashkey('speed_profile', device_id, limit))
     def get_device_speed_profile(self, device_id: str, limit: int = 300) -> list[dict[str, Any]]:
         """
         Ordered speed-over-time series for a device, including deltas for acceleration/deceleration
@@ -819,6 +838,7 @@ class AnalyticsService:
             )
             return normalize_rows(cur.fetchall())
 
+    @cached(cache=_device_cache, lock=_device_lock, key=lambda self, device_id, limit=100: hashkey('trips', device_id, limit))
     def get_trip_candidates(self, device_id: str, limit: int = 100) -> list[dict[str, Any]]:
         safe_limit = max(1, min(limit, 500))
         with get_cursor() as cur:
